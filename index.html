@@ -215,7 +215,7 @@
             const configuredTeams = firebaseConfigsPorUnidade[unidadeId]?.equipes || [];
             return {
                 ...value,
-                ativo: value.ativo === true || value.status === 'ativo' || value.coordenador === true || value.apoiador === true,
+                ativo: value.ativo === true || ['ativo', 'liberado'].includes(value.status) || value.coordenador === true || value.apoiador === true,
                 role,
                 perfil: value.perfil || ({ apoiadora: 'apoiadora', educacao_permanente: 'educação permanente', coordenador: 'coordenador', unidade: 'colaborador' }[role] || role),
                 unidadeId,
@@ -240,26 +240,57 @@
                 }
                 return normalizeProfile(profileData);
             }
-            const profileSnapshot = await getDoc(doc(db, 'perfis_usuarios', uid));
-            if (profileSnapshot.exists()) return normalizeProfile(profileSnapshot.data());
+            try {
+                const profileSnapshot = await getDoc(doc(db, 'perfis_usuarios', uid));
+                if (profileSnapshot.exists()) return normalizeProfile(profileSnapshot.data());
+            } catch (error) {
+                // Durante a transicao, as regras antigas podem bloquear esta colecao.
+            }
             // Compatibilidade temporaria com os perfis existentes.
-            const legacySnapshot = await getDoc(doc(db, 'usuarios_autorizados', uid));
-            return legacySnapshot.exists() ? normalizeProfile(legacySnapshot.data()) : null;
+            try {
+                const legacySnapshot = await getDoc(doc(db, 'usuarios_autorizados', uid));
+                if (legacySnapshot.exists()) return normalizeProfile(legacySnapshot.data());
+            } catch (error) {}
+            try {
+                const unitSnapshot = await getDoc(doc(db, `unidades/${unidadeAtual}/usuarios_sistema/${uid}`));
+                return unitSnapshot.exists() ? normalizeProfile(unitSnapshot.data()) : null;
+            } catch (error) {
+                return null;
+            }
         };
-        const createProfileRequest = (uid, data) => setDoc(doc(db, 'perfis_usuarios', uid), {
-            email: data.email || auth.currentUser?.email || '', role: 'unidade', unidadeId: data.unidadeId,
-            roleSolicitada: data.roleSolicitada === 'coordenador' ? 'coordenador' : 'unidade',
-            equipesPermitidas: [], ativo: false, status: 'aguardando_liberacao', created_at: new Date().toISOString()
-        }, { merge: false });
+        const createProfileRequest = async (uid, data) => {
+            const payload = {
+                email: data.email || auth.currentUser?.email || '', role: 'unidade', perfil: 'usuario',
+                unidadeId: data.unidadeId, unidade: data.unidadeId,
+                roleSolicitada: data.roleSolicitada === 'coordenador' ? 'coordenador' : 'unidade',
+                equipesPermitidas: [], ativo: false, status: 'aguardando_liberacao', created_at: new Date().toISOString()
+            };
+            const results = await Promise.allSettled([
+                setDoc(doc(db, 'perfis_usuarios', uid), payload, { merge: true }),
+                setDoc(doc(db, `unidades/${data.unidadeId}/usuarios_sistema/${uid}`), payload, { merge: true })
+            ]);
+            if (results.every(result => result.status === 'rejected')) throw results[0].reason;
+        };
         const getUnitAccessProfiles = async (unidadeId) => {
-            const snapshot = await getDocs(query(collection(db, 'perfis_usuarios'), where('unidadeId', '==', unidadeId)));
-            return snapshot.docs.map(item => ({ uid: item.id, ...(item.data() || {}) }));
+            const results = await Promise.allSettled([
+                getDocs(query(collection(db, 'perfis_usuarios'), where('unidadeId', '==', unidadeId))),
+                getDocs(collection(db, `unidades/${unidadeId}/usuarios_sistema`))
+            ]);
+            const merged = new Map();
+            results.filter(result => result.status === 'fulfilled').forEach(result => {
+                result.value.docs.forEach(item => merged.set(item.id, { uid: item.id, ...(item.data() || {}) }));
+            });
+            if (!merged.size && results.every(result => result.status === 'rejected')) throw results[0].reason;
+            return [...merged.values()];
         };
-        const updateAccessProfile = (uid, data) => updateDoc(doc(db, 'perfis_usuarios', uid), {
-            ...data,
-            updated_at: new Date().toISOString(),
-            updated_by: auth.currentUser?.uid || ''
-        });
+        const updateAccessProfile = async (uid, data) => {
+            const payload = { ...data, unidade: data.unidadeId, updated_at: new Date().toISOString(), updated_by: auth.currentUser?.uid || '' };
+            const results = await Promise.allSettled([
+                updateDoc(doc(db, 'perfis_usuarios', uid), payload),
+                updateDoc(doc(db, `unidades/${data.unidadeId}/usuarios_sistema/${uid}`), payload)
+            ]);
+            if (results.every(result => result.status === 'rejected')) throw results[0].reason;
+        };
 
         window.fb = {
             get app() { return app; },
