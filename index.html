@@ -417,12 +417,21 @@
 
         .global-unit-switcher {
             display: none;
-            min-width: 220px;
+            min-width: 280px;
+            max-width: 420px;
+            flex: 1;
         }
 
         .global-unit-switcher.show { display: block; }
 
-        .global-unit-switcher select { margin: 0; }
+        .global-unit-switcher select {
+            margin: 0;
+            border: 2px solid var(--primary-color);
+            background: #f0f9ff;
+            color: #0f172a;
+            font-weight: 700;
+            font-size: 1rem;
+        }
 
         .page-container {
             background: white;
@@ -964,7 +973,7 @@
                     style="background: none; color: var(--text-color); font-size: 24px; border: none; cursor: pointer;">&#9776;</button>
                 <h1 id="page-title" style="font-size: 1.5rem;">Vila Dutra APS</h1>
                 <div id="global-unit-switcher" class="global-unit-switcher">
-                    <label for="global-unidade-select" style="display:block;font-size:.72rem;color:#64748b;">Unidade em exibição</label>
+                    <label for="global-unidade-select" style="display:block;font-size:.78rem;color:#0369a1;font-weight:700;">Navegar por unidade</label>
                     <select id="global-unidade-select" aria-label="Selecionar unidade"></select>
                 </div>
                 <div class="user-profile-wrap">
@@ -1360,7 +1369,7 @@
 
             <div id="apoiador-container" class="page-container">
                 <h3 style="color: var(--primary-color);"><i data-lucide="layout-dashboard"></i> Painel do Apoiador Institucional</h3>
-                <div class="form-group">
+                <div class="form-group" style="display:none;">
                     <label>Unidade</label>
                     <select id="apoiador-unidade-select"></select>
                 </div>
@@ -1711,6 +1720,7 @@
             select.innerHTML = Object.entries(firebaseConfigsPorUnidade)
                 .map(([id, unit]) => `<option value="${id}" ${id === window.fb.unidadeAtual ? 'selected' : ''}>${escapeHtml(unit.label)}</option>`)
                 .join('');
+            document.querySelector('#sidebar h3').textContent = firebaseConfigsPorUnidade[window.fb.unidadeAtual]?.label || 'APS';
         };
 
         const changeOperationalUnit = (unitId) => {
@@ -1721,6 +1731,7 @@
             renderTeamControls(unitId);
             renderAccountMenu(getCurrentUser(), currentUserProfile);
             document.querySelector('#sidebar h3').textContent = firebaseConfigsPorUnidade[unitId].label;
+            document.getElementById('apoiador-unidade-select').value = unitId;
             initData();
             refreshCurrentView();
         };
@@ -2434,7 +2445,7 @@
 
         const renderApoiadorDashboard = async () => {
             const select = document.getElementById('apoiador-unidade-select');
-            const selectedUnit = select.value || window.fb.unidadeAtual;
+            const selectedUnit = window.fb.unidadeAtual;
             select.innerHTML = Object.entries(firebaseConfigsPorUnidade)
                 .map(([id, unidade]) => `<option value="${id}" ${id === selectedUnit ? 'selected' : ''}>${unidade.label}</option>`)
                 .join('');
@@ -2967,7 +2978,7 @@
             if (button) handleAccessAction(button);
         };
         document.getElementById('apoiador-unidade-select').onchange = () => {
-            renderApoiadorDashboard();
+            changeOperationalUnit(document.getElementById('apoiador-unidade-select').value);
         };
 
         document.getElementById('login-form').onsubmit = async (e) => {
