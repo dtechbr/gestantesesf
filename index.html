@@ -12,7 +12,7 @@
     <!-- Firebase SDK (Modular) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, updateProfile } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, updateProfile } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
         import {
             getFirestore, collection, query, where, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, getDocs
         } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
@@ -27,6 +27,14 @@
             messagingSenderId: "657527544765",
             appId: "1:657527544765:web:1eec96a29e938691f090d4",
             measurementId: "G-3RCMLBQYXH"
+        };
+        const legacyFirebaseConfig = {
+            apiKey: "AIzaSyB_0y0KHllFB32tv2OyeUw8EQSFYxMMudw",
+            authDomain: "chamado-68ac3.firebaseapp.com",
+            projectId: "chamado-68ac3",
+            storageBucket: "chamado-68ac3.firebasestorage.app",
+            messagingSenderId: "1001100519035",
+            appId: "1:1001100519035:web:bcc34bf3025326d6f224de"
         };
 
         const firebaseConfigsPorUnidade = {
@@ -129,6 +137,8 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        let legacyDb = null;
+        let legacyAuth = null;
         let BASE_PATH = "";
         let accessProfile = null;
 
@@ -323,12 +333,22 @@
             ]);
             if (results.every(result => result.status === 'rejected')) throw results[0].reason;
         };
+        const readLegacyCollection = async (name) => {
+            if (!legacyDb) {
+                const legacyApp = initializeApp(legacyFirebaseConfig, 'gestantes-offline-antigo');
+                legacyAuth = getAuth(legacyApp);
+                legacyDb = getFirestore(legacyApp);
+            }
+            if (!legacyAuth.currentUser) await signInAnonymously(legacyAuth);
+            const snapshot = await getDocs(collection(legacyDb, 'artifacts', 'controle-gestantes-vila-dutra', 'public', 'data', name));
+            return snapshot.docs.map(item => ({ id: item.id, ...(item.data() || {}) }));
+        };
 
         window.fb = {
             get app() { return app; },
             get db() { return db; },
             get auth() { return auth; },
-            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, getCurrentUser,
+            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, readLegacyCollection, getCurrentUser,
             signInCurrentUnit, createUserCurrentUnit, onAuthStateChangedCurrentUnit, signOutCurrentUnit, updateCurrentUserPassword, updateCurrentUserProfile, isUserAuthorized, getAuthorizationProfile,
             collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, getDocs,
             get unidadeAtual() { return unidadeAtual; },
@@ -983,6 +1003,7 @@
             <div class="menu-item" id="nav-consultas"><i data-lucide="calendar"></i> Consultas</div>
             <div class="menu-item" id="nav-indicador-c3"><i data-lucide="trending-up"></i> Indicador C3</div>
             <div class="menu-item" id="nav-finalizadas"><i data-lucide="archive"></i> Finalizadas</div>
+            <div class="menu-item" id="nav-investigacao"><i data-lucide="clipboard-search"></i> Investigação de Óbito</div>
             <div class="menu-item" id="nav-defesa"><i data-lucide="baby"></i> Defesa da Vida</div>
             <div class="menu-item" id="nav-backup"><i data-lucide="download"></i> Backup / Importação</div>
             <div class="menu-item" id="nav-apoiador" style="display:none;"><i data-lucide="layout-dashboard"></i> Apoiador</div>
@@ -1286,6 +1307,12 @@
                 <div id="finalizadas-list"></div>
             </div>
 
+            <div id="investigacao-container" class="page-container">
+                <h3 style="color:var(--primary-color);"><i data-lucide="clipboard-search"></i> Investigação de Óbito Materno Infantil</h3>
+                <p style="color:#64748b;">Abortos finalizados geram automaticamente um caso para investigação na unidade e equipe responsáveis.</p>
+                <div id="investigacao-list"></div>
+            </div>
+
 <div id="defesa-container" class="page-container">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                     <h3 style="color: var(--primary-color); margin: 0;"><i data-lucide="baby"></i> Programa Defesa da Vida</h3>
@@ -1389,6 +1416,7 @@
                     <input type="url" id="personal-db-url" placeholder="https://seu-banco.firebaseio.com/.json ou arquivo .json">
                 </div>
                 <button type="button" id="btn-import-personal-db" style="background:#0f766e;">Importar banco pessoal para Dutra</button>
+                <button type="button" id="btn-import-legacy-firestore" style="background:#7c3aed; margin-left:8px;">Importar banco offline antigo para esta unidade</button>
                 <div id="backup-status" style="margin-top:15px; color:#64748b; font-weight:600;"></div>
             </div>
 
@@ -1457,7 +1485,7 @@
 
     <script type="module">
         const {
-            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, getCurrentUser, signInCurrentUnit, createUserCurrentUnit,
+            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, readLegacyCollection, getCurrentUser, signInCurrentUnit, createUserCurrentUnit,
             onAuthStateChangedCurrentUnit, signOutCurrentUnit, updateCurrentUserPassword, updateCurrentUserProfile, isUserAuthorized, getAuthorizationProfile,
             addItem, updateItem, setItem, deleteItem, listenList, dbListRef, collection, getDoc, getDocs
         } = window.fb;
@@ -1470,6 +1498,7 @@
         let allLogs = [];
         let allRNs = [];
         let allRNConsultas = [];
+        let allInvestigacoesObito = [];
         let currentArea = '071';
         let dataInitialized = false;
         let unsubscribeListeners = [];
@@ -1477,7 +1506,7 @@
         let awaitingAccessMode = false;
         let currentUserProfile = null;
         let currentUserPrefs = {};
-        const DATA_LISTS = ['gestantes', 'consultas', 'ist_resultados', 'procedimentos', 'logs', 'rn_defesa_vida', 'rn_consultas'];
+        const DATA_LISTS = ['gestantes', 'consultas', 'ist_resultados', 'procedimentos', 'logs', 'rn_defesa_vida', 'rn_consultas', 'investigacoes_obito'];
 
         // UTILITÁRIOS
         const showNotify = (msg, type = 'success') => {
@@ -1631,6 +1660,11 @@
                 listenList('rn_consultas', (lista) => {
                     allRNConsultas = lista;
                     refreshCurrentView();
+                }),
+                listenList('investigacoes_obito', (lista) => {
+                    allInvestigacoesObito = lista;
+                    const activePageId = document.querySelector('.menu-item.active')?.id;
+                    if (activePageId === 'nav-investigacao' || activePageId === 'nav-finalizadas') navActions[activePageId]();
                 })
             ];
         };
@@ -1648,6 +1682,7 @@
             allLogs = [];
             allRNs = [];
             allRNConsultas = [];
+            allInvestigacoesObito = [];
             currentUserProfile = null;
             setAccessProfile(null);
             currentUserPrefs = {};
@@ -1726,7 +1761,7 @@
         const updateNavigationForProfile = () => {
             const operationalItems = [
                 'nav-list', 'nav-register', 'nav-reports', 'nav-ist', 'nav-procedimentos',
-                'nav-consultas', 'nav-indicador-c3', 'nav-finalizadas', 'nav-defesa', 'nav-backup', 'nav-logs'
+                'nav-consultas', 'nav-indicador-c3', 'nav-finalizadas', 'nav-investigacao', 'nav-defesa', 'nav-backup', 'nav-logs'
             ];
             operationalItems.forEach(id => {
                 const item = document.getElementById(id);
@@ -1766,7 +1801,7 @@
             unsubscribeListeners = [];
             dataInitialized = false;
             rawGestantes = []; allConsultas = []; allIst = []; allProcedimentos = [];
-            allLogs = []; allRNs = []; allRNConsultas = [];
+            allLogs = []; allRNs = []; allRNConsultas = []; allInvestigacoesObito = [];
         };
 
         const openDefaultViewForProfile = () => {
@@ -2251,14 +2286,24 @@
                 hideViews();
                 document.getElementById('nav-finalizadas').classList.add('active');
                 document.getElementById('finalizadas-container').style.display = 'block';
-                const list = rawGestantes.filter(g => g.finalizada && g.area_paciente === currentArea);
+                const list = rawGestantes
+                    .filter(g => g.finalizada && g.area_paciente === currentArea)
+                    .sort((a, b) => String(b.data_finalizacao || '').localeCompare(String(a.data_finalizacao || '')));
                 document.getElementById('finalizadas-list').innerHTML = `
                     <h3>Pré-Natal Finalizado - Equipe ${currentArea}</h3>
                     <table class="results-table">
-                        <tr><th>Nome</th><th>Data</th><th>Motivo</th></tr>
-                        ${list.map(g => `<tr><td>${g.nome}</td><td>${new Date(g.data_finalizacao + 'T00:00:00').toLocaleDateString()}</td><td>${g.motivo_finalizacao}</td></tr>`).join('') || '<tr><td colspan="3">Nenhum registro.</td></tr>'}
+                        <tr><th>Nome</th><th>Data</th><th>Motivo</th><th>Investigação</th></tr>
+                        ${list.map(g => { const investigation = allInvestigacoesObito.find(item => item.gestante_id === g.id); return `<tr><td>${escapeHtml(g.nome)}</td><td>${g.data_finalizacao ? new Date(g.data_finalizacao + 'T00:00:00').toLocaleDateString('pt-BR') : '--'}</td><td>${escapeHtml(g.motivo_finalizacao || '')}</td><td>${g.motivo_finalizacao === 'Aborto' ? (investigation ? '<span style="color:#16a34a;font-weight:700;">Caso criado</span>' : `<button onclick="window.criarInvestigacaoDaFinalizada('${g.id}')">Criar investigação</button>`) : '--'}</td></tr>`; }).join('') || '<tr><td colspan="4">Nenhum registro.</td></tr>'}
                     </table>
                 `;
+            },
+            'nav-investigacao': () => {
+                hideViews();
+                document.getElementById('nav-investigacao').classList.add('active');
+                document.getElementById('investigacao-container').style.display = 'block';
+                const list = allInvestigacoesObito.filter(item => normalizeArea(item.equipeId || item.area_paciente) === currentArea)
+                    .sort((a, b) => String(b.data_evento || b.created_at || '').localeCompare(String(a.data_evento || a.created_at || '')));
+                document.getElementById('investigacao-list').innerHTML = `<table class="results-table"><tr><th>Pessoa</th><th>Evento</th><th>Data</th><th>Situação</th></tr>${list.map(item => `<tr><td>${escapeHtml(item.nome_gestante || 'Não identificada')}</td><td>${escapeHtml(item.tipo_evento || 'Aborto')}</td><td>${item.data_evento ? new Date(item.data_evento + 'T00:00:00').toLocaleDateString('pt-BR') : '--'}</td><td>${escapeHtml(item.status_investigacao || 'Não iniciada')}</td></tr>`).join('') || '<tr><td colspan="4">Nenhuma investigação nesta equipe.</td></tr>'}</table>`;
             },
             'nav-backup': () => {
                 hideViews();
@@ -2458,6 +2503,38 @@
                 if (!dataInitialized) initData();
             } catch (error) {
                 status.textContent = `Erro na migração: ${error.message}`;
+            }
+        };
+
+        const importLegacyFirestore = async () => {
+            if (!requireAuth()) return;
+            if (!isAccessManager()) return showNotify('Importação permitida somente para coordenação e perfis globais.', 'error');
+            const status = document.getElementById('backup-status');
+            const overwrite = document.getElementById('import-overwrite').checked;
+            const targetUnit = window.fb.unidadeAtual;
+            try {
+                status.textContent = 'Lendo o banco offline antigo...';
+                const entries = await Promise.all(DATA_LISTS.map(async name => [name, await readLegacyCollection(name)]));
+                const legacy = Object.fromEntries(entries);
+                const gestanteTeams = new Map((legacy.gestantes || []).map(item => [item.id, normalizeArea(item.area_paciente)]));
+                const rnTeams = new Map((legacy.rn_defesa_vida || []).map(item => [item.id, normalizeArea(item.area_paciente)]));
+                let imported = 0, skipped = 0;
+                for (const name of DATA_LISTS) {
+                    for (const item of legacy[name] || []) {
+                        const { id, ...data } = item;
+                        const existing = await getDoc(window.fb.dbItemRef(name, id));
+                        if (existing.exists() && !overwrite) { skipped++; continue; }
+                        const team = normalizeArea(data.equipeId || data.area_paciente || data.equipe
+                            || gestanteTeams.get(data.gestante_id)
+                            || rnTeams.get(data.rn_id));
+                        await setItem(name, id, { ...data, ...(team ? { equipeId: team } : {}), unidadeId: targetUnit });
+                        imported++;
+                    }
+                }
+                status.textContent = `Migração concluída para ${firebaseConfigsPorUnidade[targetUnit]?.label}: ${imported} importados e ${skipped} preservados.`;
+                registrarLog('Importou Banco Offline Antigo', `Importados: ${imported} | Preservados: ${skipped}`, { colecao: 'backup' });
+            } catch (error) {
+                status.textContent = `Erro ao importar o banco antigo: ${error.message}`;
             }
         };
 
@@ -2870,6 +2947,45 @@
         };
         document.getElementById('close-fin-modal').onclick = () => document.getElementById('fin-modal').classList.remove('show');
 
+        const criarInvestigacaoAborto = async (g, dataEvento) => {
+            const existing = allInvestigacoesObito.find(item => item.gestante_id === g.id && item.tipo_evento === 'Aborto');
+            if (existing) return { criada: false, id: existing.id };
+            const id = await addItem('investigacoes_obito', {
+                gestante_id: g.id,
+                nome_gestante: g.nome || '',
+                cns: g.cns || '',
+                area_paciente: normalizeArea(g.area_paciente || currentArea),
+                equipeId: normalizeArea(g.area_paciente || currentArea),
+                tipo_evento: 'Aborto',
+                data_evento: dataEvento || '',
+                origem_cadastro: 'Finalização automática',
+                status_investigacao: 'Não iniciada',
+                etapa_atual: 1,
+                percentual_conclusao: 0,
+                elegibilidade_investigacao: 'A avaliar',
+                snapshot_origem: {
+                    gestante: { ...g },
+                    consultas: allConsultas.filter(item => item.gestante_id === g.id),
+                    procedimentos: allProcedimentos.filter(item => item.gestante_id === g.id),
+                    ist_resultados: allIst.filter(item => item.gestante_id === g.id)
+                }
+            });
+            await registrarLog('Criou Investigação de Óbito', `Paciente: ${g.nome} | Evento: Aborto | Equipe: ${g.area_paciente}`);
+            return { criada: true, id };
+        };
+
+        window.criarInvestigacaoDaFinalizada = async (id) => {
+            const g = rawGestantes.find(item => item.id === id);
+            if (!g) return;
+            try {
+                const result = await criarInvestigacaoAborto(g, g.data_finalizacao);
+                showNotify(result.criada ? 'Investigação criada.' : 'A investigação já estava cadastrada.');
+                navActions['nav-finalizadas']();
+            } catch (error) {
+                showNotify('Não foi possível criar a investigação.', 'error');
+            }
+        };
+
         document.getElementById('fin-form').onsubmit = async (e) => {
             e.preventDefault();
             if (!requireAuth()) return;
@@ -2927,6 +3043,13 @@
                     showNotify("Pré-Natal finalizado e RN encaminhado para Defesa da Vida!");
                 } else {
                     showNotify("Pré-Natal finalizado.");
+                }
+            } else if (motivo === 'Aborto') {
+                try {
+                    const result = await criarInvestigacaoAborto(g, dataFin);
+                    showNotify(result.criada ? 'Pré-Natal finalizado e enviado para investigação de óbito.' : 'Pré-Natal finalizado; a investigação já existia.');
+                } catch (error) {
+                    showNotify('Pré-Natal finalizado, mas a investigação não pôde ser criada. Use Gestantes Finalizadas para tentar novamente.', 'error');
                 }
             } else {
                 showNotify("Pré-Natal finalizado.");
@@ -2998,6 +3121,7 @@
         document.getElementById('btn-export-backup').onclick = exportFullBackup;
         document.getElementById('btn-import-backup').onclick = importFullBackup;
         document.getElementById('btn-import-personal-db').onclick = importPersonalDatabaseToDutra;
+        document.getElementById('btn-import-legacy-firestore').onclick = importLegacyFirestore;
         document.getElementById('access-users-list').onclick = (event) => {
             const button = event.target.closest('[data-access-action]');
             if (button) handleAccessAction(button);
