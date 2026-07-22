@@ -1310,6 +1310,8 @@
             <div id="investigacao-container" class="page-container">
                 <h3 style="color:var(--primary-color);"><i data-lucide="clipboard-search"></i> Investigação de Óbito Materno Infantil</h3>
                 <p style="color:#64748b;">Abortos finalizados geram automaticamente um caso para investigação na unidade e equipe responsáveis.</p>
+                <div id="investigacao-dashboard" class="report-cards-grid"></div>
+                <div id="investigacao-tipos" style="margin:15px 0;"></div>
                 <div id="investigacao-list"></div>
             </div>
 
@@ -1416,7 +1418,8 @@
                     <input type="url" id="personal-db-url" placeholder="https://seu-banco.firebaseio.com/.json ou arquivo .json">
                 </div>
                 <button type="button" id="btn-import-personal-db" style="background:#0f766e;">Importar banco pessoal para Dutra</button>
-                <button type="button" id="btn-import-legacy-firestore" style="background:#7c3aed; margin-left:8px;">Importar banco offline antigo para esta unidade</button>
+                <button type="button" id="btn-import-legacy-firestore" style="background:#7c3aed; margin-left:8px; display:none;">Importar banco offline antigo para esta unidade</button>
+                <small id="legacy-import-note" style="display:none;color:#6d28d9;margin-top:8px;">Modo seguro: registros existentes nunca são sobrescritos e duplicidades são ignoradas.</small>
                 <div id="backup-status" style="margin-top:15px; color:#64748b; font-weight:600;"></div>
             </div>
 
@@ -1770,6 +1773,13 @@
             document.getElementById('nav-apoiador').style.display =
                 (isGlobalProfile() || isCoordinatorProfile()) ? 'flex' : 'none';
             document.getElementById('nav-acessos').style.display = isAccessManager() ? 'flex' : 'none';
+            const legacyImportButton = document.getElementById('btn-import-legacy-firestore');
+            if (legacyImportButton) {
+                const canImportLegacy = String(getCurrentUser()?.email || '').toLowerCase() === 'coordviladutra@sorribauru.com.br';
+                legacyImportButton.style.display = canImportLegacy ? 'inline-block' : 'none';
+                const legacyNote = document.getElementById('legacy-import-note');
+                if (legacyNote) legacyNote.style.display = canImportLegacy ? 'block' : 'none';
+            }
         };
 
         const renderGlobalUnitSwitcher = () => {
@@ -2303,6 +2313,18 @@
                 document.getElementById('investigacao-container').style.display = 'block';
                 const list = allInvestigacoesObito.filter(item => normalizeArea(item.equipeId || item.area_paciente) === currentArea)
                     .sort((a, b) => String(b.data_evento || b.created_at || '').localeCompare(String(a.data_evento || a.created_at || '')));
+                const completed = list.filter(item => Number(item.percentual_conclusao || 0) >= 100 || item.status_investigacao === 'Concluída').length;
+                const pending = list.length - completed;
+                const abortions = list.filter(item => (item.tipo_evento || item.motivo_origem) === 'Aborto').length;
+                const notInvestigable = list.filter(item => item.elegibilidade_investigacao === 'Não investigável').length;
+                document.getElementById('investigacao-dashboard').innerHTML = `
+                    <div class="report-card"><h4>Total de casos</h4><div class="count">${list.length}</div></div>
+                    <div class="report-card warning"><h4>Pendentes</h4><div class="count">${pending}</div></div>
+                    <div class="report-card"><h4>Concluídas</h4><div class="count">${completed}</div></div>
+                    <div class="report-card"><h4>Abortos</h4><div class="count">${abortions}</div></div>
+                    <div class="report-card"><h4>Não investigáveis</h4><div class="count">${notInvestigable}</div></div>`;
+                const typeCounts = list.reduce((counts, item) => { const type = item.tipo_evento || item.motivo_origem || 'Outro'; counts[type] = (counts[type] || 0) + 1; return counts; }, {});
+                document.getElementById('investigacao-tipos').innerHTML = `<h4>Eventos por tipo — Equipe ${currentArea}</h4><div style="display:flex;gap:8px;flex-wrap:wrap;">${Object.entries(typeCounts).map(([type, count]) => `<span style="background:#e0f2fe;color:#0369a1;padding:8px 12px;border-radius:999px;font-weight:700;">${escapeHtml(type)}: ${count}</span>`).join('') || '<span style="color:#64748b;">Nenhum evento registrado.</span>'}</div>`;
                 document.getElementById('investigacao-list').innerHTML = `<table class="results-table"><tr><th>Pessoa</th><th>Evento</th><th>Data</th><th>Situação</th></tr>${list.map(item => `<tr><td>${escapeHtml(item.nome_gestante || 'Não identificada')}</td><td>${escapeHtml(item.tipo_evento || 'Aborto')}</td><td>${item.data_evento ? new Date(item.data_evento + 'T00:00:00').toLocaleDateString('pt-BR') : '--'}</td><td>${escapeHtml(item.status_investigacao || 'Não iniciada')}</td></tr>`).join('') || '<tr><td colspan="4">Nenhuma investigação nesta equipe.</td></tr>'}</table>`;
             },
             'nav-backup': () => {
@@ -2508,9 +2530,10 @@
 
         const importLegacyFirestore = async () => {
             if (!requireAuth()) return;
-            if (!isAccessManager()) return showNotify('Importação permitida somente para coordenação e perfis globais.', 'error');
+            if (String(getCurrentUser()?.email || '').toLowerCase() !== 'coordviladutra@sorribauru.com.br') {
+                return showNotify('Este importador é exclusivo da coordenação Vila Dutra.', 'error');
+            }
             const status = document.getElementById('backup-status');
-            const overwrite = document.getElementById('import-overwrite').checked;
             const targetUnit = window.fb.unidadeAtual;
             try {
                 status.textContent = 'Lendo o banco offline antigo...';
@@ -2518,16 +2541,35 @@
                 const legacy = Object.fromEntries(entries);
                 const gestanteTeams = new Map((legacy.gestantes || []).map(item => [item.id, normalizeArea(item.area_paciente)]));
                 const rnTeams = new Map((legacy.rn_defesa_vida || []).map(item => [item.id, normalizeArea(item.area_paciente)]));
+                const destinationByList = {};
+                for (const name of DATA_LISTS) destinationByList[name] = Object.entries(await snapshotList(name)).map(([id, data]) => ({ id, ...data }));
+                const isDuplicate = (name, id, data) => {
+                    const destination = destinationByList[name] || [];
+                    if (destination.some(item => item.id === id || (item.legacy_source === 'chamado-68ac3' && item.legacy_source_id === id))) return true;
+                    if (name === 'gestantes') {
+                        const cns = String(data.cns || '').replace(/\D/g, '');
+                        return destination.some(item => (cns && String(item.cns || '').replace(/\D/g, '') === cns)
+                            || (String(item.nome || '').trim().toLowerCase() === String(data.nome || '').trim().toLowerCase()
+                                && item.data_nascimento && item.data_nascimento === data.data_nascimento));
+                    }
+                    if (name === 'investigacoes_obito') {
+                        return destination.some(item => item.gestante_id === data.gestante_id
+                            && item.tipo_evento === data.tipo_evento
+                            && item.data_evento === data.data_evento);
+                    }
+                    return false;
+                };
                 let imported = 0, skipped = 0;
                 for (const name of DATA_LISTS) {
                     for (const item of legacy[name] || []) {
                         const { id, ...data } = item;
-                        const existing = await getDoc(window.fb.dbItemRef(name, id));
-                        if (existing.exists() && !overwrite) { skipped++; continue; }
+                        if (isDuplicate(name, id, data)) { skipped++; continue; }
                         const team = normalizeArea(data.equipeId || data.area_paciente || data.equipe
                             || gestanteTeams.get(data.gestante_id)
                             || rnTeams.get(data.rn_id));
-                        await setItem(name, id, { ...data, ...(team ? { equipeId: team } : {}), unidadeId: targetUnit });
+                        const importedData = { ...data, ...(team ? { equipeId: team } : {}), unidadeId: targetUnit, legacy_source: 'chamado-68ac3', legacy_source_id: id };
+                        await setItem(name, id, importedData);
+                        destinationByList[name].push({ id, ...importedData });
                         imported++;
                     }
                 }
