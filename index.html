@@ -265,11 +265,18 @@
                 roleSolicitada: data.roleSolicitada === 'coordenador' ? 'coordenador' : 'unidade',
                 equipesPermitidas: [], ativo: false, status: 'aguardando_liberacao', created_at: new Date().toISOString()
             };
-            const results = await Promise.allSettled([
+            const writes = [
                 setDoc(doc(db, 'perfis_usuarios', uid), payload, { merge: true }),
                 setDoc(doc(db, `unidades/${data.unidadeId}/usuarios_sistema/${uid}`), payload, { merge: true })
-            ]);
-            if (results.every(result => result.status === 'rejected')) throw results[0].reason;
+            ];
+            const timeout = new Promise((_, reject) => setTimeout(() => {
+                const error = new Error('O Firebase demorou demais para confirmar a solicitação.');
+                error.code = 'profile/timeout';
+                reject(error);
+            }, 12000));
+            // Um dos caminhos confirmado ja e suficiente. O segundo funciona
+            // como espelho de compatibilidade e nao deve prender a interface.
+            await Promise.race([Promise.any(writes), timeout]);
         };
         const getUnitAccessProfiles = async (unidadeId) => {
             const results = await Promise.allSettled([
@@ -1742,7 +1749,9 @@
             document.getElementById('app-container').style.display = 'none';
             document.getElementById('login-form').style.display = 'none';
             document.getElementById('awaiting-screen').style.display = 'block';
-            const message = profile?.status === 'recusado'
+            const message = profile?.newlyCreated === true
+                ? `cadastro criado com sucesso. Aguarde a autorização do coordenador da ${unidade} para entrar.`
+                : profile?.status === 'recusado'
                 ? `seu pedido de acesso foi recusado pela coordenação da ${unidade}.`
                 : (profile?.status === 'revogado'
                     ? `seu acesso à ${unidade} foi revogado pela coordenação.`
@@ -3008,7 +3017,7 @@
                     document.getElementById('login-password').value = '';
                     document.getElementById('signup-confirm-password').value = '';
                     setSignupMode(false);
-                    showAwaitingAccess(email, unidadeId);
+                    showAwaitingAccess(email, unidadeId, { status: 'aguardando_liberacao', newlyCreated: true });
                     return;
                 } else {
                     const credential = await signInCurrentUnit(email, password);
