@@ -1,0 +1,3268 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controle de Gestantes - Vila Dutra</title>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Firebase SDK (Modular) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, updateProfile } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+        import {
+            getFirestore, collection, query, where, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, getDocs
+        } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+
+        // Todas as unidades usam o mesmo projeto Firebase. A separacao ocorre nos
+        // caminhos /unidades/{unidadeId}/... e e reforcada pelas regras do Firestore.
+        const firebaseConfig = {
+            apiKey: "AIzaSyDMDeZJNtovhMEwzw8aUM7WSgnIcQFPAfU",
+            authDomain: "gestantes-dutra.firebaseapp.com",
+            projectId: "gestantes-dutra",
+            storageBucket: "gestantes-dutra.firebasestorage.app",
+            messagingSenderId: "657527544765",
+            appId: "1:657527544765:web:1eec96a29e938691f090d4",
+            measurementId: "G-3RCMLBQYXH"
+        };
+
+        const firebaseConfigsPorUnidade = {
+            godoy: {
+                label: "USF Jardim Godoy",
+                databasePath: "unidades/godoy",
+                equipes: ["021", "200", "201"],
+                enabled: true
+            },
+            nova_bauru: {
+                label: "USF Núcleo Nova Bauru",
+                databasePath: "unidades/nova_bauru",
+                equipes: ["901"],
+                enabled: true
+            },
+            nove_julho_fortunato: {
+                label: "USF Nove de Julho / Fortunato Rocha Lima",
+                databasePath: "unidades/nove_julho_fortunato",
+                equipes: ["301", "601"],
+                enabled: true
+            },
+            pousada_esperanca: {
+                label: "USF Pousada da Esperança",
+                databasePath: "unidades/pousada_esperanca",
+                equipes: ["801"],
+                enabled: true
+            },
+            santa_edwiges: {
+                label: "USF Santa Edwiges",
+                databasePath: "unidades/santa_edwiges",
+                equipes: ["501", "502", "503"],
+                enabled: true
+            },
+            tibirica: {
+                label: "USF Distrito de Tibiriçá",
+                databasePath: "unidades/tibirica",
+                equipes: ["025"],
+                enabled: true
+            },
+            dutra: {
+                label: "USF Vila Dutra",
+                databasePath: "unidades/dutra",
+                equipes: ["071", "072", "076"],
+                enabled: true
+            },
+            vila_sao_paulo: {
+                label: "USF Vila São Paulo",
+                databasePath: "unidades/vila_sao_paulo",
+                equipes: ["401", "701", "702"],
+                enabled: true
+            },
+            vargem_limpa: {
+                label: "USF Vargem Limpa",
+                databasePath: "unidades/vargem_limpa",
+                equipes: ["X"],
+                enabled: true
+            }
+        };
+
+        const automaticProfilesByEmail = {
+            'coordviladutra@sorribauru.com.br': {
+                ativo: true,
+                status: 'ativo',
+                role: 'coordenador',
+                perfil: 'coordenador',
+                nome: 'Coordenação Vila Dutra',
+                unidadeId: 'dutra',
+                legacyCompatibility: true,
+                equipesPermitidas: ['071', '072', '076']
+            }
+        };
+
+        let unidadeAtual = "dutra";
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        let BASE_PATH = "";
+        let accessProfile = null;
+
+        const switchUnit = (unidadeId) => {
+            if (!firebaseConfigsPorUnidade[unidadeId]) throw new Error("Unidade não configurada.");
+            const role = accessProfile?.role;
+            const global = role === 'apoiadora' || role === 'educacao_permanente';
+            if (accessProfile && !global && accessProfile.unidadeId !== unidadeId) {
+                throw new Error("Seu perfil não permite acessar esta unidade.");
+            }
+            unidadeAtual = unidadeId;
+            const unidade = firebaseConfigsPorUnidade[unidadeAtual];
+            BASE_PATH = unidade.databasePath;
+            return { app, auth, db, BASE_PATH, unidadeAtual };
+        };
+
+        switchUnit(unidadeAtual);
+
+        const withTimestamps = (data, isNew = false) => {
+            const agora = new Date().toISOString();
+            return {
+                ...data,
+                ...(isNew && !data.created_at ?{ created_at: agora } : {}),
+                updated_at: agora
+            };
+        };
+
+        // Adaptador para manter o restante do HTML usando uma camada simples,
+        // agora apontando para o Firestore em /unidades/{unidade}/{colecao}.
+        const setAccessProfile = (profile) => { accessProfile = profile; };
+        const dbCollectionRef = (name) => collection(db, `${BASE_PATH}/${name}`);
+        const dbListRef = (name) => {
+            const base = dbCollectionRef(name);
+            const global = accessProfile && ['apoiadora', 'educacao_permanente'].includes(accessProfile.role);
+            const teams = (accessProfile?.equipesPermitidas || []).map(String);
+            return !global && accessProfile?.equipesRestritas && teams.length
+                ? query(base, where('equipeId', 'in', teams.slice(0, 30))) : base;
+        };
+        const dbItemRef = (name, id) => doc(db, `${BASE_PATH}/${name}/${id}`);
+        const secureData = (data) => ({
+            ...data,
+            unidadeId: unidadeAtual,
+            ...(data.equipeId || data.area_paciente || data.equipe
+                ? { equipeId: String(data.equipeId || data.area_paciente || data.equipe) }
+                : {})
+        });
+        const assertWriteAccess = (data = {}) => {
+            if (!accessProfile) throw new Error('Perfil de acesso não carregado.');
+            const global = ['apoiadora', 'educacao_permanente'].includes(accessProfile.role);
+            if (!global && accessProfile.unidadeId !== unidadeAtual) throw new Error('Unidade não autorizada.');
+            const team = String(data.equipeId || data.area_paciente || data.equipe || '');
+            const permitted = (accessProfile.equipesPermitidas || []).map(String);
+            if (!global && team && permitted.length && !permitted.includes(team)) throw new Error('Equipe não autorizada.');
+        };
+        const addItem = async (name, data) => {
+            assertWriteAccess(data);
+            const novoDoc = await addDoc(dbCollectionRef(name), withTimestamps(secureData(data), true));
+            return novoDoc.id;
+        };
+        const updateItem = (name, id, data) => { assertWriteAccess(data); return updateDoc(dbItemRef(name, id), withTimestamps(secureData(data))); };
+        const setItem = (name, id, data) => { assertWriteAccess(data); return setDoc(dbItemRef(name, id), withTimestamps(secureData(data), true), { merge: true }); };
+        const deleteItem = (name, id) => deleteDoc(dbItemRef(name, id));
+        const listenList = (name, callback) => onSnapshot(dbListRef(name), (snapshot) => {
+            const global = accessProfile && ['apoiadora', 'educacao_permanente'].includes(accessProfile.role);
+            const permitted = (accessProfile?.equipesPermitidas || []).map(String);
+            const lista = snapshot.docs
+                .map((documento) => ({ id: documento.id, ...(documento.data() || {}) }))
+                .filter((item) => global || !permitted.length || !item.equipeId || permitted.includes(String(item.equipeId)));
+            callback(lista);
+        });
+
+        const getCurrentUser = () => auth.currentUser;
+        const signInCurrentUnit = (email, password) => signInWithEmailAndPassword(auth, email, password);
+        const createUserCurrentUnit = (email, password) => createUserWithEmailAndPassword(auth, email, password);
+        const onAuthStateChangedCurrentUnit = (callback) => onAuthStateChanged(auth, callback);
+        const signOutCurrentUnit = () => signOut(auth);
+        const updateCurrentUserPassword = (newPassword) => updatePassword(auth.currentUser, newPassword);
+        const updateCurrentUserProfile = (data) => updateProfile(auth.currentUser, data);
+        const normalizeProfile = (value) => {
+            if (!value) return null;
+            const legacyRole = value.apoiador ? 'apoiadora' : (value.coordenador ? 'coordenador' : 'unidade');
+            const role = value.role || legacyRole;
+            const unidadeId = value.unidadeId || value.unidade || null;
+            const configuredTeams = firebaseConfigsPorUnidade[unidadeId]?.equipes || [];
+            return {
+                ...value,
+                ativo: value.ativo === true || value.status === 'ativo' || value.coordenador === true || value.apoiador === true,
+                role,
+                perfil: value.perfil || ({ apoiadora: 'apoiadora', educacao_permanente: 'educação permanente', coordenador: 'coordenador', unidade: 'colaborador' }[role] || role),
+                unidadeId,
+                equipesRestritas: value.legacyCompatibility === true
+                    ? false
+                    : Array.isArray(value.equipesPermitidas) && value.equipesPermitidas.length > 0,
+                equipesPermitidas: Array.isArray(value.equipesPermitidas) && value.equipesPermitidas.length
+                    ? value.equipesPermitidas.map(String) : configuredTeams.map(String)
+            };
+        };
+        const isUserAuthorized = async (uid) => Boolean((await getAuthorizationProfile(uid))?.ativo);
+        const getAuthorizationProfile = async (uid) => {
+            const email = String(auth.currentUser?.email || '').trim().toLowerCase();
+            const automaticProfile = automaticProfilesByEmail[email];
+            if (automaticProfile) {
+                const profileData = { ...automaticProfile, email };
+                try {
+                    await setDoc(doc(db, 'perfis_usuarios', uid), profileData, { merge: true });
+                } catch (error) {
+                    // As regras ainda podem não ter sido publicadas. O perfil
+                    // automatico continua valido nesta sessao para compatibilidade.
+                }
+                return normalizeProfile(profileData);
+            }
+            const profileSnapshot = await getDoc(doc(db, 'perfis_usuarios', uid));
+            if (profileSnapshot.exists()) return normalizeProfile(profileSnapshot.data());
+            // Compatibilidade temporaria com os perfis existentes.
+            const legacySnapshot = await getDoc(doc(db, 'usuarios_autorizados', uid));
+            return legacySnapshot.exists() ? normalizeProfile(legacySnapshot.data()) : null;
+        };
+        const createProfileRequest = (uid, data) => setDoc(doc(db, 'perfis_usuarios', uid), {
+            email: data.email || auth.currentUser?.email || '', role: 'unidade', unidadeId: data.unidadeId,
+            roleSolicitada: data.roleSolicitada === 'coordenador' ? 'coordenador' : 'unidade',
+            equipesPermitidas: [], ativo: false, status: 'aguardando_liberacao', created_at: new Date().toISOString()
+        }, { merge: false });
+        const getUnitAccessProfiles = async (unidadeId) => {
+            const snapshot = await getDocs(query(collection(db, 'perfis_usuarios'), where('unidadeId', '==', unidadeId)));
+            return snapshot.docs.map(item => ({ uid: item.id, ...(item.data() || {}) }));
+        };
+        const updateAccessProfile = (uid, data) => updateDoc(doc(db, 'perfis_usuarios', uid), {
+            ...data,
+            updated_at: new Date().toISOString(),
+            updated_by: auth.currentUser?.uid || ''
+        });
+
+        window.fb = {
+            get app() { return app; },
+            get db() { return db; },
+            get auth() { return auth; },
+            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, getCurrentUser,
+            signInCurrentUnit, createUserCurrentUnit, onAuthStateChangedCurrentUnit, signOutCurrentUnit, updateCurrentUserPassword, updateCurrentUserProfile, isUserAuthorized, getAuthorizationProfile,
+            collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, getDocs,
+            get unidadeAtual() { return unidadeAtual; },
+            get BASE_PATH() { return BASE_PATH; },
+            dbListRef, dbItemRef, addItem, updateItem, setItem, deleteItem, listenList
+        };
+    </script>
+
+    <style>
+        :root {
+            --primary-color: #0ea5e9;
+            --secondary-color: #f8f9fa;
+            --text-color: #1e293b;
+            --border-color: #e2e8f0;
+            --success-color: #22c55e;
+            --error-color: #ef4444;
+            --warning-color: #f59e0b;
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            background-color: #f1f5f9;
+            color: var(--text-color);
+        }
+
+        .container {
+            display: flex;
+        }
+
+        #sidebar {
+            position: fixed;
+            top: 0;
+            left: -260px;
+            width: 260px;
+            height: 100%;
+            background: white;
+            box-shadow: var(--shadow);
+            transition: 0.3s;
+            z-index: 1000;
+            padding-top: 20px;
+            box-sizing: border-box;
+            overflow-y: auto;
+        }
+
+        #sidebar-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.38);
+            z-index: 999;
+        }
+
+        #sidebar-backdrop.show { display: block; }
+
+        #sidebar.open {
+            left: 0;
+        }
+
+        #sidebar h3 {
+            padding: 0 20px;
+            color: var(--primary-color);
+            font-size: 1.2rem;
+        }
+
+        .menu-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 20px;
+            color: #64748b;
+            text-decoration: none;
+            border-left: 4px solid transparent;
+            cursor: pointer;
+        }
+
+        .menu-item:hover,
+        .menu-item.active {
+            background: #f0f9ff;
+            color: var(--primary-color);
+            border-left-color: var(--primary-color);
+        }
+
+        .menu-item i {
+            margin-right: 10px;
+            width: 18px;
+        }
+
+        #main-content {
+            width: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+            transition: 0.3s;
+        }
+
+        @media (min-width: 768px) {
+            #sidebar {
+                left: 0;
+            }
+
+            #main-content {
+                margin-left: 260px;
+            }
+
+            #menu-btn {
+                display: none;
+            }
+
+            #close-sidebar, #sidebar-backdrop { display: none !important; }
+        }
+
+        .global-unit-switcher {
+            display: none;
+            min-width: 220px;
+        }
+
+        .global-unit-switcher.show { display: block; }
+
+        .global-unit-switcher select { margin: 0; }
+
+        .page-container {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            display: none;
+            margin-top: 20px;
+        }
+
+        .user-profile-wrap {
+            margin-left: auto;
+            position: relative;
+        }
+
+        .user-profile-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border: 1px solid #dbeafe;
+            border-radius: 8px;
+            background: #f8fafc;
+            color: #64748b;
+            font-size: 0.78rem;
+            line-height: 1.2;
+            cursor: pointer;
+            min-height: 48px;
+        }
+
+        .user-profile-pill strong {
+            color: #0f172a;
+            font-size: 0.86rem;
+        }
+
+        .user-profile-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: #e0f2fe;
+            color: var(--primary-color);
+            flex: 0 0 auto;
+        }
+
+        .user-profile-text {
+            text-align: right;
+        }
+
+        .user-profile-pill:empty {
+            display: none;
+        }
+
+        .account-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 10px);
+            width: min(360px, calc(100vw - 40px));
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 16px;
+            z-index: 900;
+            display: none;
+        }
+
+        .account-menu.show {
+            display: block;
+        }
+
+        .account-menu h4 {
+            margin: 0 0 12px 0;
+            color: #0f172a;
+        }
+
+        .account-info {
+            background: #f8fafc;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 12px;
+            font-size: 0.85rem;
+            color: #475569;
+        }
+
+        .avatar-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .avatar-choice {
+            min-height: 38px;
+            padding: 8px;
+            background: #f8fafc;
+            color: #64748b;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+
+        .avatar-choice.active {
+            background: #e0f2fe;
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+
+        fieldset {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        legend {
+            padding: 0 10px;
+            font-weight: bold;
+            color: var(--primary-color);
+            font-size: 0.9rem;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+
+        .form-group-inline {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .form-group-inline>.form-group {
+            flex: 1;
+            min-width: 120px;
+        }
+
+        button {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        .report-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .report-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            border-left: 5px solid var(--primary-color);
+            box-shadow: var(--shadow);
+            text-align: center;
+        }
+
+        .report-card.warning {
+            border-left-color: var(--warning-color);
+        }
+
+        .report-card .count {
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--primary-color);
+        }
+
+        .gestante-card {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: relative;
+            transition: 0.2s;
+        }
+
+        .gestante-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow);
+        }
+
+        .high-risk {
+            border-left: 6px solid var(--error-color);
+        }
+
+        .normal-risk {
+            border-left: 6px solid var(--success-color);
+        }
+
+        .tabs-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .tab-btn {
+            background: none;
+            color: #64748b;
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+        }
+
+        .tab-btn.active {
+            color: var(--primary-color);
+            border-bottom-color: var(--primary-color);
+            font-weight: bold;
+        }
+
+        #notification {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 15px 30px;
+            border-radius: 50px;
+            color: white;
+            font-weight: bold;
+            z-index: 9999;
+            display: none;
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 500px;
+            position: relative;
+        }
+
+        .status-pill {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+
+        .status-ok {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-pending {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        .results-table th,
+        .results-table td {
+            border: 1px solid var(--border-color);
+            padding: 10px;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+
+        .results-table th {
+            background: #f8f9fa;
+        }
+        #login-screen {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            box-sizing: border-box;
+            background: #f1f5f9;
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 380px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            padding: 28px;
+            box-sizing: border-box;
+        }
+
+        .login-card h1 {
+            margin: 0 0 8px;
+            color: var(--primary-color);
+            font-size: 1.5rem;
+        }
+
+        .login-card p {
+            margin: 0 0 22px;
+            color: #64748b;
+            font-size: 0.95rem;
+        }
+
+        #login-error {
+            display: none;
+            margin-top: 12px;
+            color: var(--error-color);
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .login-helper {
+            margin-top: 14px;
+            text-align: center;
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+
+        .login-link {
+            background: none;
+            color: var(--primary-color);
+            padding: 0;
+            border-radius: 0;
+            font-weight: 700;
+            text-decoration: underline;
+        }
+
+        .login-link:hover {
+            opacity: 1;
+        }
+
+        .tutorial-item {
+            margin-top: 8px;
+            font-size: 0.9rem;
+            color: #94a3b8;
+        }
+
+        .tutorial-item:hover {
+            color: var(--primary-color);
+        }
+
+        .tutorial-box {
+            max-width: 560px;
+        }
+
+        .tutorial-progress {
+            display: flex;
+            gap: 6px;
+            margin: 12px 0 20px;
+        }
+
+        .tutorial-dot {
+            height: 6px;
+            flex: 1;
+            border-radius: 999px;
+            background: #e2e8f0;
+        }
+
+        .tutorial-dot.active {
+            background: var(--primary-color);
+        }
+
+        .tutorial-step-title {
+            margin: 0 0 10px;
+            color: var(--primary-color);
+            font-size: 1.25rem;
+        }
+
+        .tutorial-step-text {
+            color: #475569;
+            line-height: 1.55;
+            margin-bottom: 18px;
+        }
+
+        .tutorial-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+
+        .tutorial-actions button {
+            min-width: 120px;
+        }
+
+        .tutorial-secondary {
+            background: #e2e8f0;
+            color: #475569;
+        }
+
+        .access-user-card {
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 12px;
+            background: #fff;
+        }
+
+        .access-user-card.pending { border-left: 5px solid #f59e0b; }
+        .access-user-card.active { border-left: 5px solid #22c55e; }
+        .access-user-card.revoked { border-left: 5px solid #94a3b8; }
+
+        .access-team-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 12px 0;
+        }
+
+        .access-team-list label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #f8fafc;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 7px 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <section id="login-screen">
+        <form id="login-form" class="login-card">
+            <h1>Vila Dutra APS</h1>
+            <p id="login-intro">Selecione a unidade e entre com seu e-mail institucional.</p>
+            <div class="form-group">
+                <label>Unidade</label>
+                <select id="login-unidade" required>
+                    <option value="dutra">USF Vila Dutra</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>E-mail</label>
+                <input type="email" id="login-email" autocomplete="username" required>
+            </div>
+            <div class="form-group">
+                <label>Senha</label>
+                <input type="password" id="login-password" autocomplete="current-password" required>
+            </div>
+            <div class="form-group" id="signup-confirm-area" style="display: none;">
+                <label>Confirmar senha</label>
+                <input type="password" id="signup-confirm-password" autocomplete="new-password">
+            </div>
+            <div class="form-group" id="signup-role-area" style="display:none;">
+                <label>Tipo de acesso solicitado</label>
+                <select id="signup-role-request">
+                    <option value="unidade">Funcionário da unidade</option>
+                    <option value="coordenador">Coordenador da unidade</option>
+                </select>
+            </div>
+            <button type="submit" id="login-submit" style="width: 100%;">Entrar</button>
+            <div class="login-helper">
+                <span id="login-mode-text">Ainda não tem cadastro?</span>
+                <button type="button" id="toggle-signup" class="login-link">Criar cadastro</button>
+            </div>
+            <div class="login-helper">Use somente e-mail @sorribauru.com.br</div>
+            <div id="login-error"></div>
+        </form>
+        <div id="awaiting-screen" class="login-card" style="display:none;">
+            <h1>Acesso em análise</h1>
+            <p id="awaiting-text">Seu cadastro foi recebido e precisa ser liberado pelo coordenador da unidade.</p>
+            <button type="button" id="awaiting-back" style="width:100%;">Voltar ao login</button>
+        </div>
+    </section>
+    <div class="container" id="app-container" style="display: none;">
+        <div id="sidebar-backdrop" aria-hidden="true"></div>
+        <nav id="sidebar">
+            <button id="close-sidebar"
+                style="position: absolute; right: 15px; top: 15px; background: none; color: #94a3b8; font-size: 24px; border: none; cursor: pointer;">&times;</button>
+            <h3>Vila Dutra APS</h3>
+            <div class="menu-item" id="nav-list"><i data-lucide="list"></i> Listar Gestantes</div>
+            <div class="menu-item" id="nav-register"><i data-lucide="user-plus"></i> Cadastrar Novo</div>
+            <div class="menu-item" id="nav-reports"><i data-lucide="bar-chart-3"></i> Relatórios / Busca</div>
+            <div class="menu-item" id="nav-ist"><i data-lucide="shield-check"></i> Controle de IST</div>
+            <div class="menu-item" id="nav-procedimentos"><i data-lucide="activity"></i> Procedimentos</div>
+            <div class="menu-item" id="nav-consultas"><i data-lucide="calendar"></i> Consultas</div>
+            <div class="menu-item" id="nav-indicador-c3"><i data-lucide="trending-up"></i> Indicador C3</div>
+            <div class="menu-item" id="nav-finalizadas"><i data-lucide="archive"></i> Finalizadas</div>
+            <div class="menu-item" id="nav-defesa"><i data-lucide="baby"></i> Defesa da Vida</div>
+            <div class="menu-item" id="nav-backup"><i data-lucide="download"></i> Backup / Importação</div>
+            <div class="menu-item" id="nav-apoiador" style="display:none;"><i data-lucide="layout-dashboard"></i> Apoiador</div>
+            <div class="menu-item" id="nav-acessos" style="display:none;"><i data-lucide="users-round"></i> Acesso de Usuários</div>
+            <div class="menu-item" id="nav-logs"><i data-lucide="history"></i> Histórico (Logs)</div>
+            <div class="menu-item" id="logout-btn"><i data-lucide="log-out"></i> Sair</div>
+            <div class="menu-item tutorial-item" id="tutorial-btn"><i data-lucide="circle-help"></i> Tutorial</div>
+        </nav>
+
+        <main id="main-content">
+            <header style="display: flex; align-items: center; gap: 15px;">
+                <button id="menu-btn"
+                    style="background: none; color: var(--text-color); font-size: 24px; border: none; cursor: pointer;">&#9776;</button>
+                <h1 id="page-title" style="font-size: 1.5rem;">Vila Dutra APS</h1>
+                <div id="global-unit-switcher" class="global-unit-switcher">
+                    <label for="global-unidade-select" style="display:block;font-size:.72rem;color:#64748b;">Unidade em exibição</label>
+                    <select id="global-unidade-select" aria-label="Selecionar unidade"></select>
+                </div>
+                <div class="user-profile-wrap">
+                    <button type="button" id="user-profile-pill" class="user-profile-pill"></button>
+                    <div id="account-menu" class="account-menu">
+                        <h4>Configurações da Conta</h4>
+                        <div class="account-info">
+                            <div><strong>E-mail:</strong> <span id="account-email">--</span></div>
+                            <div><strong>Perfil:</strong> <span id="account-role">--</span></div>
+                            <div><strong>Unidade:</strong> <span id="account-unit">--</span></div>
+                            <div><strong>Último acesso:</strong> <span id="account-last-access">--</span></div>
+                        </div>
+                        <div class="form-group">
+                            <label>Nome para exibição</label>
+                            <input type="text" id="account-display-name" placeholder="Como quer aparecer no sistema">
+                        </div>
+                        <label>Ícone do perfil</label>
+                        <div class="avatar-grid" id="avatar-grid">
+                            <button type="button" class="avatar-choice" data-avatar="user-round"><i data-lucide="user-round"></i></button>
+                            <button type="button" class="avatar-choice" data-avatar="stethoscope"><i data-lucide="stethoscope"></i></button>
+                            <button type="button" class="avatar-choice" data-avatar="heart-pulse"><i data-lucide="heart-pulse"></i></button>
+                            <button type="button" class="avatar-choice" data-avatar="shield-check"><i data-lucide="shield-check"></i></button>
+                            <button type="button" class="avatar-choice" data-avatar="layout-dashboard"><i data-lucide="layout-dashboard"></i></button>
+                        </div>
+                        <button type="button" id="save-account-profile" style="width:100%; margin-bottom:12px;">Salvar perfil</button>
+                        <div class="form-group">
+                            <label>Nova senha</label>
+                            <input type="password" id="account-new-password" autocomplete="new-password" placeholder="Mínimo de 6 caracteres">
+                        </div>
+                        <div class="form-group">
+                            <label>Confirmar nova senha</label>
+                            <input type="password" id="account-confirm-password" autocomplete="new-password">
+                        </div>
+                        <button type="button" id="change-account-password" style="width:100%; background:#64748b;">Alterar senha</button>
+                    </div>
+                </div>
+            </header>
+
+            <div id="equipe-selector" class="tabs-container">
+                <button class="tab-btn active" data-area="071">Equipe 071</button>
+                <button class="tab-btn" data-area="072">Equipe 072</button>
+                <button class="tab-btn" data-area="076">Equipe 076</button>
+            </div>
+
+            <!-- LISTA -->
+            <div id="list-container" class="page-container">
+                <div id="list-summary-dashboard" class="report-cards-grid"></div>
+                <div id="gestantes-list"></div>
+            </div>
+
+            <!-- CADASTRO -->
+            <div id="form-container" class="page-container">
+                <form id="gestante-form">
+                    <input type="hidden" id="edit-id">
+                    <div class="form-group"><label>Nome Completo</label><input type="text" id="nome" required></div>
+                    <div class="form-group-inline">
+                        <div class="form-group"><label>Área/Equipe</label><select id="area_paciente">
+                                <option>071</option>
+                                <option>072</option>
+                                <option>076</option>
+                            </select></div>
+                        <div class="form-group"><label>CNS</label><input type="text" id="cns"></div>
+                    </div>
+                    <div class="form-group-inline">
+                        <div class="form-group"><label>DUM</label><input type="date" id="dum" required></div>
+                        <div class="form-group"><label>Nascimento</label><input type="date" id="data_nascimento"
+                                required></div>
+                    </div>
+                    <div class="form-group-inline">
+                        <div class="form-group"><label>Risco</label><select id="risco_gestacional">
+                                <option>RISCO HABITUAL</option>
+                                <option>ALTO RISCO</option>
+                            </select></div>
+                        <div class="form-group"><label>Abertura PN</label><input type="date"
+                                id="data_abertura_prenatal"></div>
+                    </div>
+                    <button type="submit" id="save-btn" style="width: 100%;">Salvar Cadastro</button>
+                    <button type="button" id="cancel-btn"
+                        style="width: 100%; margin-top: 10px; background: #64748b; display: none;">Cancelar
+                        Edição</button>
+                </form>
+            </div>
+
+            <!-- IST -->
+            <div id="ist-container" class="page-container">
+                <div class="form-group"><label>Selecione a Gestante</label><select id="ist-gestante-select"
+                        class="select-gestante"></select></div>
+                <div id="ist-form-area" style="display:none;">
+
+                    <form id="ist-form">
+                        <fieldset>
+                            <legend>Resultados 1º Trimestre (TR)</legend>
+                            <div class="form-group-inline">
+                                <div class="form-group"><label>Sífilis</label><select name="sifilis_1t_resultado"
+                                        class="check-sifilis">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Data</label><input type="date" name="sifilis_1t_data">
+                                </div>
+                            </div>
+                            <div class="form-group-inline">
+                                <div class="form-group"><label>HIV</label><select name="hiv_1t_resultado">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Data</label><input type="date" name="hiv_1t_data"></div>
+                            </div>
+                            <div class="form-group-inline">
+                                <div class="form-group"><label>Hepatite B</label><select name="hepb_1t_resultado">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Hepatite C</label><select name="hepc_1t_resultado">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                            </div>
+                        </fieldset>
+
+                        <fieldset>
+                            <legend>Resultados 2º Trimestre (TR)</legend>
+                            <div class="form-group-inline">
+                                <div class="form-group"><label>Sífilis</label><select name="sifilis_2t_resultado"
+                                        class="check-sifilis">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Data</label><input type="date" name="sifilis_2t_data">
+                                </div>
+                                <div class="form-group"><label>HIV</label><select name="hiv_2t_resultado">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Data</label><input type="date" name="hiv_2t_data"></div>
+                            </div>
+                        </fieldset>
+
+                        <fieldset>
+                            <legend>Resultados 3º Trimestre (TR)</legend>
+                            <div class="form-group-inline">
+                                <div class="form-group"><label>Sífilis</label><select name="sifilis_3t_resultado"
+                                        class="check-sifilis">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Data</label><input type="date" name="sifilis_3t_data">
+                                </div>
+                            </div>
+                            <div class="form-group-inline">
+                                <div class="form-group"><label>HIV</label><select name="hiv_3t_resultado">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Data</label><input type="date" name="hiv_3t_data"></div>
+                            </div>
+                            <div class="form-group-inline">
+                                <div class="form-group"><label>Hepatite B</label><select name="hepb_3t_resultado">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                                <div class="form-group"><label>Hepatite C</label><select name="hepc_3t_resultado">
+                                        <option value="">-</option>
+                                        <option>Reagente</option>
+                                        <option>Não Reagente</option>
+                                    </select></div>
+                            </div>
+                            <div class="form-group">
+                                <label>GBS (Estreptococo B)</label>
+                                <select name="gbs_3t">
+                                    <option value="">-</option>
+                                    <option>Positivo</option>
+                                    <option>Negativo</option>
+                                    <option>Não Realizado</option>
+                                </select>
+                            </div>
+                        </fieldset>
+
+                        <div id="seguimento-clinico-area" style="display:none;">
+                            <fieldset style="border-color: #ef4444;">
+                                <legend style="color: #ef4444;">Seguimento Clínico (Sífilis Reagente)</legend>
+                                <div class="form-group">
+                                    <label>Titulação VDRL (Ex: 1:4)</label>
+                                    <input type="text" name="vdrl_titulacao" placeholder="Ex: 1:8">
+                                </div>
+                                <div class="form-group">
+                                    <label>Esquema de Penicilina / Observações</label>
+                                    <textarea name="penicilina_tratamento" rows="3"
+                                        placeholder="Doses, datas e parceiro"></textarea>
+                                </div>
+                            </fieldset>
+                        </div>
+
+                        <fieldset style="border-color: #94a3b8;">
+                            <legend style="color: #64748b;">Outros Pedidos / Repetições Extras</legend>
+                            <textarea name="exames_extras" rows="2"
+                                placeholder="Descreva aqui novos pedidos ou repetições fora do cronograma padrão"></textarea>
+                        </fieldset>
+
+                        <button type="submit" style="width: 100%; background: #0ea5e9;">Salvar Atualização de
+                            IST</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- PROCEDIMENTOS -->
+            <div id="procedimentos-container" class="page-container">
+                <div class="form-group"><label>Selecione a Gestante</label><select id="procedimento-gestante-select"
+                        class="select-gestante"></select></div>
+                <div id="procedimento-content" style="display:none;">
+                    <form id="procedimento-form">
+                        <div class="form-group-inline">
+                            <div class="form-group"><label>Data</label><input type="date" id="proc-data" required></div>
+                            <div class="form-group"><label>PA (mmHg)</label><input type="text" id="proc-pa"
+                                    placeholder="120/80"></div>
+                            <div class="form-group"><label>Peso (kg)</label><input type="number" step="0.1"
+                                    id="proc-peso"></div>
+                        </div>
+                        <button type="submit">Registrar Procedimento</button>
+                    </form>
+                    <div id="procedimentos-history-area" style="margin-top:20px;"></div>
+                </div>
+            </div>
+
+            <!-- CONSULTAS -->
+            <div id="consultas-container" class="page-container">
+                <div class="form-group"><label>Selecione a Gestante</label><select id="consulta-gestante-select"
+                        class="select-gestante"></select></div>
+                <div id="consulta-content" style="display:none;">
+
+                    <form id="consulta-form">
+                        <input type="hidden" id="edit-cons-id">
+
+                        <div class="form-group-inline">
+                            <div class="form-group"><label>Data da Consulta</label><input type="date" id="cons-data"
+                                    required></div>
+                            <div class="form-group"><label>Tipo de Atendimento</label>
+                                <select id="cons-tipo">
+                                    <option>Médico</option>
+                                    <option>Enfermeiro</option>
+                                    <option>Odonto</option>
+                                    <option>Visita ACS</option>
+                                    <option>Nutricionista</option>
+                                    <option>Assistente Social</option>
+                                </select>
+                            </div>
+                            <div class="form-group"><label>Status</label>
+                                <select id="cons-status">
+                                    <option value="Compareceu">Compareceu</option>
+                                    <option value="Agendada">Agendada</option>
+                                    <option value="Faltou">Faltou</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button type="submit" id="btn-save-cons" style="width: 100%;">Registrar Atendimento</button>
+                        <button type="button" id="btn-cancel-cons"
+                            style="background: #64748b; width: 100%; margin-top: 10px; display: none;">Cancelar
+                            Edição</button>
+                    </form>
+                    <div id="consultas-history-area" style="margin-top:20px;"></div>
+                </div>
+            </div>
+
+            <!-- RELATÓRIOS -->
+            <div id="reports-container" class="page-container">
+                <div id="report-content"></div>
+            </div>
+
+            <!-- INDICADOR C3 -->
+            <div id="indicador-c3-container" class="page-container">
+                <div id="indicador-c3-content"></div>
+            </div>
+
+            <!-- FINALIZADAS -->
+            <div id="finalizadas-container" class="page-container">
+                <div id="finalizadas-list"></div>
+            </div>
+
+<div id="defesa-container" class="page-container">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h3 style="color: var(--primary-color); margin: 0;"><i data-lucide="baby"></i> Programa Defesa da Vida</h3>
+                    <button onclick="window.abrirModalRN()" style="background: #22c55e; padding: 8px 15px; font-size: 0.9rem;">+ Cadastro Manual</button>
+                </div>
+                
+                <div id="rn-list-content"></div>
+            </div>
+
+            <div id="rn-modal" class="modal-overlay">
+                <div class="modal-content" style="max-width: 600px; max-height: 90vh; overflow-y: auto;">
+                    <h3>Cadastrar RN de Risco</h3>
+                    <form id="rn-form">
+                        <div class="form-group"><label>Nome do RN (Ex: RN de Maria)</label><input type="text" id="rn-nome" required></div>
+                        <div class="form-group-inline">
+                            <div class="form-group"><label>Equipe</label><select id="rn-equipe"><option>071</option><option>072</option><option>076</option></select></div>
+                            <div class="form-group"><label>Data Nascimento</label><input type="date" id="rn-dn" required></div>
+                        </div>
+                        <fieldset>
+                            <legend>Critérios de Inclusão (Marque os aplicáveis)</legend>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem;">
+                                <div><input type="checkbox" name="crit" value="Baixo peso (< 2500g)"> Baixo peso (< 2500g)</div>
+                                <div><input type="checkbox" name="crit" value="Pré-termo (< 37 sem)"> Pré-termo (< 37 sem)</div>
+                                <div><input type="checkbox" name="crit" value="Pós-termo (> 42 sem)"> Pós-termo (> 42 sem)</div>
+                                <div><input type="checkbox" name="crit" value="PIG"> PIG (Pequeno p/ IG)</div>
+                                <div><input type="checkbox" name="crit" value="GIG"> GIG (Grande p/ IG)</div>
+                                <div><input type="checkbox" name="crit" value="Asfixia Grave (Apgar < 7)"> Asfixia Grave (Apgar < 7)</div>
+                                <div><input type="checkbox" name="crit" value="Mãe HIV+"> Mãe HIV+</div>
+                                <div><input type="checkbox" name="crit" value="Infecções Congênitas (STORCH+Z)"> Infecções Congênitas (STORCH+Z)</div>
+                                <div><input type="checkbox" name="crit" value="Malformações congênitas"> Malformações congênitas</div>
+                                <div><input type="checkbox" name="crit" value="Cromossomopatias"> Cromossomopatias</div>
+                                <div><input type="checkbox" name="crit" value="Egresso de UTI/UCI"> Egresso de UTI/UCI</div>
+                                <div><input type="checkbox" name="crit" value="Mãe < 16 ou > 40 anos"> Mãe < 16 ou > 40 anos</div>
+                                <div><input type="checkbox" name="crit" value="Mãe < 19 e Multípara"> Mãe < 19 e Multípara</div>
+                                <div><input type="checkbox" name="crit" value="Mãe usuária de SPA"> Mãe usuária de SPA</div>
+                            </div>
+                        </fieldset>
+                        <button type="submit" style="width: 100%; margin-top: 15px;">Salvar RN</button>
+                        <button type="button" onclick="document.getElementById('rn-modal').classList.remove('show')" style="background: none; color: #64748b; width: 100%; margin-top: 10px;">Cancelar</button>
+                    </form>
+                </div>
+            </div>
+
+            <div id="rn-consulta-modal" class="modal-overlay">
+                <div class="modal-content" style="max-width: 700px;">
+                    <h3 id="rn-nome-titulo">Acompanhamento RN</h3>
+                    <div id="rn-timeline" style="margin-bottom: 20px;"></div>
+                    
+                    <form id="rn-consulta-form" style="display: none; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #cbd5e1;">
+                        <input type="hidden" id="rn-id-atual">
+                        <input type="hidden" id="rn-marco-atual">
+                        <h4 id="rn-form-titulo" style="margin-top: 0; color: #0ea5e9;"></h4>
+                        <div class="form-group-inline">
+                            <div class="form-group"><label>Status</label>
+                                <select id="rn-cons-status">
+                                    <option value="Compareceu">Compareceu</option>
+                                    <option value="Agendado">Agendado</option>
+                                    <option value="Faltou">Faltou</option>
+                                </select>
+                            </div>
+                            <div class="form-group"><label>Data</label><input type="date" id="rn-cons-data" required></div>
+                        </div>
+                        <div class="form-group-inline">
+                            <div class="form-group"><label>Peso (g)</label><input type="number" id="rn-cons-peso" placeholder="Ex: 3200"></div>
+                            <div class="form-group"><label>Estatura (cm)</label><input type="number" step="0.1" id="rn-cons-estatura" placeholder="Ex: 48.5"></div>
+                            <div class="form-group"><label>Aleitamento</label>
+                                <select id="rn-cons-aleitamento">
+                                    <option value="">Selecione...</option>
+                                    <option value="Exclusivo">Exclusivo </option>
+                                    <option value="Misto">Misto +</option>
+                                    <option value="Fórmula">Fórmula </option>
+                                </select>
+                            </div>
+                        </div>
+                        <button type="submit" style="width: 100%; margin-top: 10px;">Salvar Atendimento</button>
+                        <button type="button" onclick="document.getElementById('rn-consulta-form').style.display = 'none'" style="background: none; color: #64748b; width: 100%; margin-top: 10px;">Cancelar</button>
+                    </form>
+                    <button type="button" onclick="document.getElementById('rn-consulta-modal').classList.remove('show')" style="background: #e2e8f0; color: #475569; width: 100%; margin-top: 15px;">Fechar Calendário</button>
+                </div>
+            </div>
+
+            <div id="backup-container" class="page-container">
+                <h3 style="color: var(--primary-color);"><i data-lucide="database-backup"></i> Backup e Importação</h3>
+                <p style="color:#64748b;">Baixe ou restaure todas as listas principais desta unidade.</p>
+                <div class="form-group-inline">
+                    <button type="button" id="btn-export-backup">Baixar backup JSON</button>
+                    <label style="display:inline-flex; align-items:center; gap:10px; color:#64748b;">
+                        <input type="checkbox" id="import-overwrite"> Sobrescrever IDs existentes
+                    </label>
+                </div>
+                <div class="form-group" style="margin-top:15px;">
+                    <label>Arquivo JSON de backup</label>
+                    <input type="file" id="backup-file" accept="application/json,.json">
+                </div>
+                <button type="button" id="btn-import-backup" style="background:#64748b;">Importar backup</button>
+                <hr style="border:0; border-top:1px solid var(--border-color); margin:22px 0;">
+                <h4 style="margin:0 0 8px 0; color:#0f172a;">Migração do banco pessoal para Dutra</h4>
+                <p style="color:#64748b; margin-top:0;">Cole a URL do JSON ou do Realtime Database antigo. O sistema grava os dados direto em <strong>USF Vila Dutra</strong>.</p>
+                <div class="form-group">
+                    <label>URL do banco pessoal</label>
+                    <input type="url" id="personal-db-url" placeholder="https://seu-banco.firebaseio.com/.json ou arquivo .json">
+                </div>
+                <button type="button" id="btn-import-personal-db" style="background:#0f766e;">Importar banco pessoal para Dutra</button>
+                <div id="backup-status" style="margin-top:15px; color:#64748b; font-weight:600;"></div>
+            </div>
+
+            <div id="apoiador-container" class="page-container">
+                <h3 style="color: var(--primary-color);"><i data-lucide="layout-dashboard"></i> Painel do Apoiador Institucional</h3>
+                <div class="form-group">
+                    <label>Unidade</label>
+                    <select id="apoiador-unidade-select"></select>
+                </div>
+                <div id="apoiador-dashboard" class="report-cards-grid"></div>
+                <div id="apoiador-detail"></div>
+            </div>
+
+            <div id="acessos-container" class="page-container">
+                <h3 style="color: var(--primary-color);"><i data-lucide="users-round"></i> Acesso de Usuários</h3>
+                <p style="color:#64748b;">Aprove, recuse ou revogue acessos dentro da sua permissão. Apoiadoras podem aprovar coordenadores e funcionários; coordenadores administram os funcionários da própria unidade.</p>
+                <div id="access-users-status" style="color:#64748b; margin-bottom:12px;"></div>
+                <div id="access-users-list"></div>
+            </div>
+            
+            <!-- logs -->
+            <div id="logs-container" class="page-container">
+                <h3 style="color: var(--primary-color);"><i data-lucide="history"></i> Histórico de Alterações do
+                    Sistema</h3>
+                <div id="logs-list-content"></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal Finalizar -->
+    <div id="fin-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3>Finalizar Pré-Natal</h3>
+            <form id="fin-form">
+                <input type="hidden" id="fin-id">
+                <div class="form-group"><label>Motivo</label><select id="fin-motivo">
+                        <option>Parto</option>
+                        <option>Aborto</option>
+                        <option>Transferência</option>
+                        <option>Abandono</option>
+                    </select></div>
+                <div class="form-group"><label>Data</label><input type="date" id="fin-data" required></div>
+                <button type="submit" style="width: 100%;">Confirmar Finalização</button>
+                <button type="button" id="close-fin-modal"
+                    style="background: none; color: #64748b; width: 100%; margin-top: 10px; cursor: pointer;">Cancelar</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="notification"></div>
+
+    <div id="tutorial-modal" class="modal-overlay">
+        <div class="modal-content tutorial-box">
+            <h3 id="tutorial-title" class="tutorial-step-title"></h3>
+            <div id="tutorial-progress" class="tutorial-progress"></div>
+            <p id="tutorial-text" class="tutorial-step-text"></p>
+            <div class="tutorial-actions">
+                <button type="button" id="tutorial-close" class="tutorial-secondary">Fechar</button>
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                    <button type="button" id="tutorial-prev" class="tutorial-secondary">Anterior</button>
+                    <button type="button" id="tutorial-next">Próximo</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        const {
+            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, getCurrentUser, signInCurrentUnit, createUserCurrentUnit,
+            onAuthStateChangedCurrentUnit, signOutCurrentUnit, updateCurrentUserPassword, updateCurrentUserProfile, isUserAuthorized, getAuthorizationProfile,
+            addItem, updateItem, setItem, deleteItem, listenList, dbListRef, collection, getDoc, getDocs
+        } = window.fb;
+        
+        // ESTADO GLOBAL
+        let rawGestantes = [];
+        let allConsultas = [];
+        let allIst = [];
+        let allProcedimentos = [];
+        let allLogs = [];
+        let allRNs = [];
+        let allRNConsultas = [];
+        let currentArea = '071';
+        let dataInitialized = false;
+        let unsubscribeListeners = [];
+        let signupMode = false;
+        let awaitingAccessMode = false;
+        let currentUserProfile = null;
+        let currentUserPrefs = {};
+        const DATA_LISTS = ['gestantes', 'consultas', 'ist_resultados', 'procedimentos', 'logs', 'rn_defesa_vida', 'rn_consultas'];
+
+        // UTILITÁRIOS
+        const showNotify = (msg, type = 'success') => {
+            const el = document.getElementById('notification');
+            el.textContent = msg;
+            el.style.backgroundColor = type === 'success' ?'#22c55e' : '#ef4444';
+            el.style.display = 'block';
+            setTimeout(() => el.style.display = 'none', 3000);
+        };
+
+        const calcIG = (dum) => {
+            if (!dum) return { ig: '--', sem: 0 };
+            const hoje = new Date();
+            const d = new Date(dum + 'T00:00:00');
+            const diff = Math.floor((hoje - d) / (1000 * 60 * 60 * 24));
+            const sem = Math.floor(diff / 7);
+            const dias = diff % 7;
+            return { ig: `${sem}s ${dias}d`, sem };
+        };
+
+        const hideViews = () => {
+            document.querySelectorAll('.page-container').forEach(c => c.style.display = 'none');
+            document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('active'));
+            document.getElementById('sidebar').classList.remove('open');
+            document.getElementById('sidebar-backdrop').classList.remove('show');
+        };
+
+        const normalizeArea = (value) => {
+            const clean = String(value || '').trim().toUpperCase();
+            return /^\d+$/.test(clean) ? clean.padStart(3, '0') : clean;
+        };
+
+        const getUnitTeams = (unitId = window.fb.unidadeAtual) => {
+            const equipes = firebaseConfigsPorUnidade[unitId]?.equipes || ["071", "072", "076"];
+            const allTeams = equipes.map(normalizeArea);
+            const isGlobal = ['apoiadora', 'educacao_permanente'].includes(currentUserProfile?.role);
+            if (isGlobal || !currentUserProfile) return allTeams;
+            const allowed = (currentUserProfile.equipesPermitidas || []).map(normalizeArea);
+            return allowed.length ? allTeams.filter(team => allowed.includes(team)) : allTeams;
+        };
+
+        const renderTeamControls = (unitId = window.fb.unidadeAtual) => {
+            const teams = getUnitTeams(unitId);
+            if (!teams.includes(currentArea)) currentArea = teams[0] || '071';
+
+            const equipeSelector = document.getElementById('equipe-selector');
+            if (equipeSelector) {
+                equipeSelector.innerHTML = teams
+                    .map(area => `<button class="tab-btn ${area === currentArea ? 'active' : ''}" data-area="${escapeHtml(area)}">Equipe ${escapeHtml(area)}</button>`)
+                    .join('');
+                equipeSelector.querySelectorAll('.tab-btn').forEach(btn => {
+                    btn.onclick = () => {
+                        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        currentArea = btn.dataset.area;
+                        refreshCurrentView();
+                    };
+                });
+            }
+
+            ['area_paciente', 'rn-equipe'].forEach(id => {
+                const select = document.getElementById(id);
+                if (!select) return;
+                const previous = select.value || currentArea;
+                select.innerHTML = teams.map(area => `<option value="${escapeHtml(area)}">${escapeHtml(area)}</option>`).join('');
+                select.value = teams.includes(previous) ? previous : currentArea;
+            });
+        };
+
+        const isInstitutionalEmail = (email) => /^[^@\s]+@sorribauru\.com\.br$/i.test(String(email || '').trim());
+
+        const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }[char]));
+
+        const escapeJsArg = (value) => String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
+
+        const requireAuth = () => {
+            if (!getCurrentUser()) {
+                showNotify("Faça login para continuar.", "error");
+                return false;
+            }
+            return true;
+        };
+
+        const isGlobalProfile = () => ['apoiadora', 'educacao_permanente'].includes(currentUserProfile?.role);
+        const isCoordinatorProfile = () => currentUserProfile?.role === 'coordenador' || currentUserProfile?.coordenador === true;
+        const isAccessManager = () => isGlobalProfile() || isCoordinatorProfile();
+
+        const refreshCurrentView = () => {
+            updateAllSelects();
+            const activePageId = document.querySelector('.menu-item.active')?.id;
+            if (activePageId && navActions[activePageId]) navActions[activePageId]();
+        };
+
+        // FUNÇÃO DE REGISTRO DE LOGS / AUDITORIA
+        const registrarLog = async (acao, detalhe, meta = {}) => {
+            const usuario = getCurrentUser();
+            if (!usuario) return;
+            try {
+                const agora = new Date();
+                await addItem('logs', {
+                    data_hora: agora.toISOString(),
+                    acao: acao,
+                    detalhe: detalhe,
+                    equipe: currentArea,
+                    usuario_email: usuario.email || '',
+                    usuario_uid: usuario.uid,
+                    usuario_perfil: currentUserProfile?.perfil || 'colaborador',
+                    unidade: window.fb.unidadeAtual,
+                    ...meta
+                });
+            } catch (e) { console.error("Erro ao salvar log", e); }
+        };
+
+        // SINCRONIZAÇÃO EM TEMPO REAL COM O FIRESTORE.
+        // Cada coleção do Firestore vem como documentos, e o adaptador converte para array.
+        const initData = () => {
+            if (dataInitialized) return;
+            dataInitialized = true;
+            unsubscribeListeners = [
+                listenList('gestantes', (lista) => {
+                    rawGestantes = lista.map(data => ({ ...data, area_paciente: normalizeArea(data.area_paciente) }));
+                    refreshCurrentView();
+                }),
+                listenList('consultas', (lista) => {
+                    allConsultas = lista;
+                    refreshHistoryLists();
+                }),
+                listenList('ist_resultados', (lista) => {
+                    allIst = lista;
+                    refreshCurrentView();
+                }),
+                listenList('procedimentos', (lista) => {
+                    allProcedimentos = lista;
+                    refreshHistoryLists();
+                }),
+                listenList('logs', (lista) => {
+                    allLogs = lista;
+                    const activePageId = document.querySelector('.menu-item.active')?.id;
+                    if (activePageId === 'nav-logs') navActions['nav-logs']();
+                }),
+                listenList('rn_defesa_vida', (lista) => {
+                    allRNs = lista.map(data => ({ ...data, area_paciente: normalizeArea(data.area_paciente) }));
+                    refreshCurrentView();
+                }),
+                listenList('rn_consultas', (lista) => {
+                    allRNConsultas = lista;
+                    refreshCurrentView();
+                })
+            ];
+        };
+
+        const resetLocalData = () => {
+            unsubscribeListeners.forEach(unsubscribe => {
+                if (typeof unsubscribe === 'function') unsubscribe();
+            });
+            unsubscribeListeners = [];
+            dataInitialized = false;
+            rawGestantes = [];
+            allConsultas = [];
+            allIst = [];
+            allProcedimentos = [];
+            allLogs = [];
+            allRNs = [];
+            allRNConsultas = [];
+            currentUserProfile = null;
+            setAccessProfile(null);
+            currentUserPrefs = {};
+            document.getElementById('user-profile-pill').innerHTML = '';
+            document.getElementById('account-menu').classList.remove('show');
+            document.getElementById('nav-apoiador').style.display = 'none';
+            document.getElementById('nav-acessos').style.display = 'none';
+            hideViews();
+        };
+
+        const showLogin = () => {
+            awaitingAccessMode = false;
+            document.getElementById('login-screen').style.display = 'flex';
+            document.getElementById('login-form').style.display = 'block';
+            document.getElementById('awaiting-screen').style.display = 'none';
+            document.getElementById('app-container').style.display = 'none';
+        };
+
+        const showApp = () => {
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('app-container').style.display = 'flex';
+        };
+
+        const userPrefsKey = (user) => `gestantes_user_prefs_${user?.uid || user?.email || 'anon'}`;
+
+        const loadUserPreferences = (user) => {
+            try {
+                currentUserPrefs = JSON.parse(localStorage.getItem(userPrefsKey(user)) || '{}');
+            } catch {
+                currentUserPrefs = {};
+            }
+            currentUserPrefs.avatar = currentUserPrefs.avatar || 'user-round';
+            return currentUserPrefs;
+        };
+
+        const saveUserPreferences = (user) => {
+            localStorage.setItem(userPrefsKey(user), JSON.stringify(currentUserPrefs));
+        };
+
+        const renderAccountMenu = (user, profile) => {
+            const unidadeLabel = firebaseConfigsPorUnidade[window.fb.unidadeAtual]?.label || 'Unidade';
+            const displayName = currentUserPrefs.displayName || user.displayName || profile?.nome || user.email;
+            document.getElementById('user-profile-pill').innerHTML = `
+                <span class="user-profile-avatar"><i data-lucide="${escapeHtml(currentUserPrefs.avatar || 'user-round')}"></i></span>
+                <span class="user-profile-text">
+                    <strong>${escapeHtml(displayName)}</strong><br>
+                    ${escapeHtml(profile?.perfil || 'colaborador')} | ${escapeHtml(unidadeLabel)}
+                </span>
+                <i data-lucide="chevron-down" style="width:16px;"></i>
+            `;
+            document.getElementById('account-email').textContent = user.email || '--';
+            document.getElementById('account-role').textContent = profile?.perfil || 'colaborador';
+            document.getElementById('account-unit').textContent = unidadeLabel;
+            document.getElementById('account-last-access').textContent = new Date().toLocaleString('pt-BR');
+            document.getElementById('account-display-name').value = displayName || '';
+            document.querySelectorAll('.avatar-choice').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.avatar === currentUserPrefs.avatar);
+            });
+            if (window.lucide) lucide.createIcons();
+        };
+
+        const applyUserProfile = (user, profile) => {
+            currentUserProfile = profile || { perfil: 'colaborador' };
+            setAccessProfile(currentUserProfile);
+            if (!isGlobalProfile() && currentUserProfile.unidadeId && currentUserProfile.unidadeId !== window.fb.unidadeAtual) {
+                switchUnit(currentUserProfile.unidadeId);
+            }
+            loadUserPreferences(user);
+            renderAccountMenu(user, currentUserProfile);
+            renderTeamControls();
+            document.querySelector('#sidebar h3').textContent = firebaseConfigsPorUnidade[window.fb.unidadeAtual]?.label || 'APS';
+            updateNavigationForProfile();
+            renderGlobalUnitSwitcher();
+        };
+
+        const updateNavigationForProfile = () => {
+            const operationalItems = [
+                'nav-list', 'nav-register', 'nav-reports', 'nav-ist', 'nav-procedimentos',
+                'nav-consultas', 'nav-indicador-c3', 'nav-finalizadas', 'nav-defesa', 'nav-backup', 'nav-logs'
+            ];
+            operationalItems.forEach(id => {
+                const item = document.getElementById(id);
+                if (item) item.style.display = 'flex';
+            });
+            document.getElementById('nav-apoiador').style.display =
+                (isGlobalProfile() || isCoordinatorProfile()) ? 'flex' : 'none';
+            document.getElementById('nav-acessos').style.display = isAccessManager() ? 'flex' : 'none';
+        };
+
+        const renderGlobalUnitSwitcher = () => {
+            const wrap = document.getElementById('global-unit-switcher');
+            const select = document.getElementById('global-unidade-select');
+            wrap.classList.toggle('show', isGlobalProfile());
+            if (!isGlobalProfile()) return;
+            select.innerHTML = Object.entries(firebaseConfigsPorUnidade)
+                .map(([id, unit]) => `<option value="${id}" ${id === window.fb.unidadeAtual ? 'selected' : ''}>${escapeHtml(unit.label)}</option>`)
+                .join('');
+        };
+
+        const changeOperationalUnit = (unitId) => {
+            if (!isGlobalProfile()) return;
+            resetDataListenersOnly();
+            switchUnit(unitId);
+            localStorage.setItem('gestantes_unidade_atual', unitId);
+            renderTeamControls(unitId);
+            renderAccountMenu(getCurrentUser(), currentUserProfile);
+            document.querySelector('#sidebar h3').textContent = firebaseConfigsPorUnidade[unitId].label;
+            initData();
+            refreshCurrentView();
+        };
+
+        const resetDataListenersOnly = () => {
+            unsubscribeListeners.forEach(unsubscribe => typeof unsubscribe === 'function' && unsubscribe());
+            unsubscribeListeners = [];
+            dataInitialized = false;
+            rawGestantes = []; allConsultas = []; allIst = []; allProcedimentos = [];
+            allLogs = []; allRNs = []; allRNConsultas = [];
+        };
+
+        const openDefaultViewForProfile = () => {
+            if (isGlobalProfile()) {
+                document.getElementById('page-title').textContent = 'Painel do Apoiador Institucional';
+                navActions['nav-apoiador']();
+                return;
+            }
+            navActions['nav-list']();
+        };
+
+        const showAwaitingAccess = (email, unidadeId, profile = null) => {
+            awaitingAccessMode = true;
+            const unidade = firebaseConfigsPorUnidade[unidadeId]?.label || 'unidade selecionada';
+            document.getElementById('login-screen').style.display = 'flex';
+            document.getElementById('app-container').style.display = 'none';
+            document.getElementById('login-form').style.display = 'none';
+            document.getElementById('awaiting-screen').style.display = 'block';
+            const message = profile?.status === 'recusado'
+                ? `seu pedido de acesso foi recusado pela coordenação da ${unidade}.`
+                : (profile?.status === 'revogado'
+                    ? `seu acesso à ${unidade} foi revogado pela coordenação.`
+                    : `seu cadastro está aguardando liberação do coordenador da ${unidade}.`);
+            document.getElementById('awaiting-text').textContent = `${email ? email + ': ' : ''}${message}`;
+        };
+
+        const populateUnitSelector = () => {
+            const select = document.getElementById('login-unidade');
+            select.innerHTML = Object.entries(firebaseConfigsPorUnidade)
+                .map(([id, unidade]) => {
+                    const disabled = unidade.enabled ? '' : ' disabled';
+                    const suffix = unidade.enabled ? '' : ' (em configuração)';
+                    return `<option value="${id}"${disabled}>${unidade.label}${suffix}</option>`;
+                })
+                .join('');
+        };
+
+        const setSignupMode = (enabled) => {
+            signupMode = enabled;
+            document.getElementById('signup-confirm-area').style.display = signupMode ?'block' : 'none';
+            document.getElementById('signup-role-area').style.display = signupMode ? 'block' : 'none';
+            document.getElementById('signup-confirm-password').required = signupMode;
+            document.getElementById('login-submit').textContent = signupMode ?'Criar cadastro' : 'Entrar';
+            document.getElementById('login-mode-text').textContent = signupMode ?'Já tem cadastro?' : 'Ainda não tem cadastro?';
+            document.getElementById('toggle-signup').textContent = signupMode ?'Entrar' : 'Criar cadastro';
+            document.getElementById('login-intro').textContent = signupMode
+                ?'Selecione a unidade e crie seu acesso com e-mail institucional.'
+                : 'Selecione a unidade e entre com seu e-mail institucional.';
+            document.getElementById('login-error').style.display = 'none';
+        };
+
+        const refreshHistoryLists = () => {
+            const gIdProc = document.getElementById('procedimento-gestante-select').value;
+            if (gIdProc) window.loadProcHistory(gIdProc);
+
+            const gIdCons = document.getElementById('consulta-gestante-select').value;
+            if (gIdCons) window.loadConsHistory(gIdCons);
+
+            const activePageId = document.querySelector('.menu-item.active')?.id;
+            if (activePageId === 'nav-list' || activePageId === 'nav-indicador-c3') {
+                navActions[activePageId]();
+            }
+        };
+
+        const updateAllSelects = () => {
+            const list = rawGestantes.filter(g => !g.finalizada && g.area_paciente === currentArea);
+            document.querySelectorAll('.select-gestante').forEach(sel => {
+                const currentVal = sel.value;
+                sel.innerHTML = '<option value="">Selecione a Gestante...</option>' +
+                    list.sort((a, b) => a.nome.localeCompare(b.nome))
+                        .map(g => `<option value="${g.id}">${g.nome}</option>`).join('');
+                if ([...sel.options].some(o => o.value === currentVal)) sel.value = currentVal;
+            });
+        };
+
+        // LOGICA DE INDICADOR C3
+        const calculateC3 = (g) => {
+            const consults = allConsultas.filter(c => c.gestante_id === g.id);
+            const ist = allIst.find(i => i.gestante_id === g.id);
+
+            const capturesEarly = g.data_abertura_prenatal && g.dum && (new Date(g.data_abertura_prenatal) - new Date(g.dum)) / (1000 * 60 * 60 * 24 * 7) < 12;
+            const has6PlusConsults = consults.filter(c => ['Médico', 'Enfermeiro'].includes(c.tipo_consulta)).length >= 6;
+            const hasOdonto = consults.some(c => c.tipo_consulta === 'Odonto');
+            const hasIST = ist && ist.sifilis_1t_resultado && ist.hiv_1t_resultado;
+
+            return { capturesEarly, has6PlusConsults, hasOdonto, hasIST };
+        };
+
+        const accessStatusLabel = (profile) => {
+            if (profile.ativo === true && profile.status !== 'revogado') return 'Ativo';
+            if (profile.status === 'recusado') return 'Recusado';
+            if (profile.status === 'revogado') return 'Revogado';
+            return 'Aguardando aprovação';
+        };
+
+        const renderAccessUsers = async () => {
+            const list = document.getElementById('access-users-list');
+            const status = document.getElementById('access-users-status');
+            if (!isAccessManager()) {
+                list.innerHTML = '<p style="color:#ef4444;">Perfil sem permissão para administrar acessos.</p>';
+                return;
+            }
+            const managementUnitId = isGlobalProfile() ? window.fb.unidadeAtual : currentUserProfile.unidadeId;
+            status.textContent = 'Carregando usuários da unidade...';
+            try {
+                const profiles = (await getUnitAccessProfiles(managementUnitId))
+                    .filter(profile => ['unidade', 'coordenador'].includes(profile.role) && profile.uid !== getCurrentUser()?.uid)
+                    .filter(profile => isGlobalProfile() || (profile.role !== 'coordenador' && profile.roleSolicitada !== 'coordenador'))
+                    .sort((a, b) => {
+                        const priority = p => p.status === 'aguardando_liberacao' ? 0 : (p.ativo ? 1 : 2);
+                        return priority(a) - priority(b) || String(a.email || '').localeCompare(String(b.email || ''));
+                    });
+                const teams = (firebaseConfigsPorUnidade[managementUnitId]?.equipes || []).map(normalizeArea);
+                const unitLabel = firebaseConfigsPorUnidade[managementUnitId]?.label || managementUnitId;
+                status.textContent = `${unitLabel}: ${profiles.filter(p => p.status === 'aguardando_liberacao').length} solicitação(ões) aguardando.`;
+                list.innerHTML = profiles.map(profile => {
+                    const selectedTeams = (profile.equipesPermitidas || []).map(String);
+                    const stateClass = profile.ativo ? 'active' : (profile.status === 'aguardando_liberacao' ? 'pending' : 'revoked');
+                    const requestedRole = profile.roleSolicitada === 'coordenador' ? 'coordenador' : (profile.role || 'unidade');
+                    return `<div class="access-user-card ${stateClass}" data-uid="${escapeHtml(profile.uid)}" data-current-role="${escapeHtml(profile.role || 'unidade')}">
+                        <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                            <div><strong>${escapeHtml(profile.nome || profile.email || 'Usuário')}</strong><br><small>${escapeHtml(profile.email || '')} · Solicitado: ${requestedRole === 'coordenador' ? 'Coordenador' : 'Funcionário'}</small></div>
+                            <strong>${escapeHtml(accessStatusLabel(profile))}</strong>
+                        </div>
+                        ${isGlobalProfile() ? `<div class="form-group" style="margin-top:12px;"><label>Perfil que será concedido</label><select class="access-role-select"><option value="unidade" ${requestedRole === 'unidade' ? 'selected' : ''}>Funcionário da unidade</option><option value="coordenador" ${requestedRole === 'coordenador' ? 'selected' : ''}>Coordenador da unidade</option></select></div>` : ''}
+                        <div class="access-team-list">
+                            ${teams.map(team => `<label><input type="checkbox" class="access-team-checkbox" value="${escapeHtml(team)}" ${selectedTeams.includes(team) || profile.status === 'aguardando_liberacao' ? 'checked' : ''}> Equipe ${escapeHtml(team)}</label>`).join('')}
+                        </div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button type="button" data-access-action="approve" data-uid="${escapeHtml(profile.uid)}">${profile.ativo ? 'Atualizar equipes' : 'Aceitar acesso'}</button>
+                            ${profile.status === 'aguardando_liberacao' ? `<button type="button" data-access-action="reject" data-uid="${escapeHtml(profile.uid)}" style="background:#ef4444;">Recusar</button>` : ''}
+                            ${profile.ativo ? `<button type="button" data-access-action="revoke" data-uid="${escapeHtml(profile.uid)}" style="background:#64748b;">Revogar acesso</button>` : ''}
+                        </div>
+                    </div>`;
+                }).join('') || '<p>Nenhum usuário cadastrado nesta unidade.</p>';
+            } catch (error) {
+                status.textContent = '';
+                list.innerHTML = `<p style="color:#ef4444;">Não foi possível carregar os acessos: ${escapeHtml(error.message)}</p>`;
+            }
+            if (window.lucide) lucide.createIcons();
+        };
+
+        const handleAccessAction = async (button) => {
+            if (!isAccessManager()) return;
+            const uid = button.dataset.uid;
+            const action = button.dataset.accessAction;
+            const card = document.querySelector(`.access-user-card[data-uid="${uid}"]`);
+            if (!card) return;
+            const managementUnitId = isGlobalProfile() ? window.fb.unidadeAtual : currentUserProfile.unidadeId;
+            const equipesPermitidas = [...card.querySelectorAll('.access-team-checkbox:checked')].map(input => input.value);
+            const approvedRole = isGlobalProfile() ? (card.querySelector('.access-role-select')?.value || 'unidade') : 'unidade';
+            if (action === 'approve' && !equipesPermitidas.length) {
+                showNotify('Selecione pelo menos uma equipe.', 'error');
+                return;
+            }
+            button.disabled = true;
+            try {
+                const changes = action === 'approve'
+                    ? { ativo: true, status: 'ativo', role: approvedRole, roleSolicitada: approvedRole, unidadeId: managementUnitId, equipesPermitidas }
+                    : { ativo: false, status: action === 'reject' ? 'recusado' : 'revogado', role: card.dataset.currentRole || 'unidade', unidadeId: managementUnitId };
+                await updateAccessProfile(uid, changes);
+                await registrarLog(
+                    action === 'approve' ? 'Aprovou Acesso' : (action === 'reject' ? 'Recusou Acesso' : 'Revogou Acesso'),
+                    `UID: ${uid}`,
+                    { colecao: 'perfis_usuarios' }
+                );
+                showNotify(action === 'approve' ? 'Acesso atualizado.' : (action === 'reject' ? 'Solicitação recusada.' : 'Acesso revogado.'));
+                await renderAccessUsers();
+            } catch (error) {
+                showNotify(`Não foi possível alterar o acesso: ${error.message}`, 'error');
+                button.disabled = false;
+            }
+        };
+
+        // NAVEGAÇÃO DE TELAS
+        const navActions = {
+            'nav-list': () => {
+                hideViews();
+                document.getElementById('nav-list').classList.add('active');
+                document.getElementById('list-container').style.display = 'block';
+
+                const baseList = rawGestantes.filter(g => !g.finalizada && g.area_paciente === currentArea);
+                const altoRisco = baseList.filter(g => g.risco_gestacional === 'ALTO RISCO').length;
+
+                document.getElementById('list-summary-dashboard').innerHTML = `
+                    <div class="report-card"><h4>Ativas</h4><div class="count">${baseList.length}</div></div>
+                    <div class="report-card warning"><h4>Alto Risco</h4><div class="count">${altoRisco}</div></div>
+                `;
+
+                document.getElementById('gestantes-list').innerHTML = `
+                    <div style="margin-bottom: 20px; position: relative;">
+                        <i data-lucide="search" style="position: absolute; left: 12px; top: 12px; color: #94a3b8; width: 20px;"></i>
+                        <input type="text" id="search-input" placeholder="Buscar gestante por Nome ou CNS..." 
+                               style="width: 100%; padding: 12px 10px 12px 40px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 1rem; box-sizing: border-box; box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);">
+                    </div>
+                    <div id="gestantes-list-content"></div>
+                `;
+
+                const renderCards = (listaParaRenderizar) => {
+                    const hoje = new Date();
+                    hoje.setHours(0, 0, 0, 0);
+
+                    const html = listaParaRenderizar.map(g => {
+                        const { ig, sem } = calcIG(g.dum);
+                        const idArg = escapeJsArg(g.id);
+                        const nomeSeguro = escapeHtml(g.nome || '');
+                        const cnsSeguro = escapeHtml(g.cns || '--');
+                        let badges = '';
+
+                        if (sem >= 37) badges += `<span style="background:#fce7f3; color:#be185d; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;">Atenção Reta Final (${sem} sem)</span>`;
+                        else if (sem >= 28) badges += `<span style="background:#e0e7ff; color:#4338ca; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;"> 3º Trimestre</span>`;
+
+                        const cons = allConsultas.filter(c => c.gestante_id === g.id).sort((a, b) => new Date(b.data_consulta) - new Date(a.data_consulta));
+                        if (cons.length === 0) {
+                            badges += `<span style="background:#fef3c7; color:#b45309; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;">Atenção Sem Consulta</span>`;
+                        } else {
+                            const ultimaData = new Date(cons[0].data_consulta + 'T00:00:00');
+                            const diffDias = Math.floor((hoje - ultimaData) / (1000 * 60 * 60 * 24));
+                            if (diffDias > 35) badges += `<span style="background:#fee2e2; color:#b91c1c; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;">Atenção Atraso (${diffDias} dias)</span>`;
+                        }
+
+                        const ist = allIst.find(i => i.gestante_id === g.id);
+                        if (!ist || (!ist.sifilis_1t_resultado && !ist.sifilis_2t_resultado && !ist.sifilis_3t_resultado && !ist.hiv_1t_resultado)) {
+                            badges += `<span style="background:#f1f5f9; color:#475569; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;">Pendência IST Pendente</span>`;
+                        } else {
+                            if (ist.sifilis_1t_resultado === 'Reagente' || ist.sifilis_2t_resultado === 'Reagente' || ist.sifilis_3t_resultado === 'Reagente' ||
+                                ist.hiv_1t_resultado === 'Reagente' || ist.hiv_2t_resultado === 'Reagente' || ist.hiv_3t_resultado === 'Reagente' ||
+                                ist.hepb_1t_resultado === 'Reagente' || ist.hepb_3t_resultado === 'Reagente' ||
+                                ist.hepc_1t_resultado === 'Reagente' || ist.hepc_3t_resultado === 'Reagente') {
+                                badges += `<span style="background:#f3e8ff; color:#7e22ce; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;"> IST Reagente</span>`;
+                            }
+                        }
+
+                       return `
+                            <div class="gestante-card ${g.risco_gestacional === 'ALTO RISCO' ?'high-risk' : 'normal-risk'}" style="flex-direction: column; align-items: stretch; gap: 10px;">
+                                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                    <div class="card-content" onclick="window.editG('${idArg}')" style="cursor:pointer; flex: 1;">
+                                        <h4 style="margin:0; color:var(--primary-color); font-size: 1.1rem;">${nomeSeguro}</h4>
+                                        <small style="color:#64748b;">IG: ${escapeHtml(ig)} | CNS: ${cnsSeguro}</small>
+                                    </div>
+                                    <div style="display: flex; gap: 8px;">
+                                        <button onclick="window.prepararFin('${idArg}')" style="background:#f1f5f9; color:#64748b; border: 1px solid #cbd5e1; font-size:12px; padding:6px 12px; transition: 0.2s;">Finalizar</button>
+                                        <button onclick="window.deletarGestante('${idArg}')" style="background:#fee2e2; color:#ef4444; border: 1px solid #fca5a5; font-size:12px; padding:6px 10px; border-radius: 8px; transition: 0.2s; display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                            <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i> Deletar
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                               <div style="display: flex; gap: 4px; border-top: 1px dashed #e2e8f0; padding-top: 6px; margin-top: 4px; justify-content: flex-end;">
+                                    <button onclick="window.irParaIst('${idArg}')" style="background: #f0f9ff; color: #0ea5e9; border: 1px solid #bae6fd; font-size: 9px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-weight: bold; display: flex; align-items: center; gap: 3px; transition: 0.2s;">
+                                        <i data-lucide="microscope" style="width: 10px; height: 10px;"></i> IST
+                                    </button>
+                                    <button onclick="window.irParaProcedimento('${idArg}')" style="background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; font-size: 9px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-weight: bold; display: flex; align-items: center; gap: 3px; transition: 0.2s;">
+                                        <i data-lucide="activity" style="width: 10px; height: 10px;"></i> Proc.
+                                    </button>
+                                    <button onclick="window.irParaConsulta('${idArg}')" style="background: #faf5ff; color: #7c3aed; border: 1px solid #e9d5ff; font-size: 9px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-weight: bold; display: flex; align-items: center; gap: 3px; transition: 0.2s;">
+                                        <i data-lucide="calendar" style="width: 10px; height: 10px;"></i> Cons.
+                                    </button>
+                                </div>
+
+                                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                    ${badges}
+                                </div>
+                            </div>
+                        `;
+                    }).join('') || `<p style="text-align:center; color:#94a3b8; padding: 20px;">Nenhuma gestante encontrada.</p>`;
+
+                    document.getElementById('gestantes-list-content').innerHTML = html;
+                };
+
+                renderCards(baseList);
+
+                document.getElementById('search-input').addEventListener('input', (e) => {
+                    const termo = e.target.value.toLowerCase();
+                    const filtradas = baseList.filter(g => g.nome.toLowerCase().includes(termo) || (g.cns && g.cns.includes(termo)));
+                    renderCards(filtradas);
+                });
+                if (window.lucide) window.lucide.createIcons();
+            },
+            'nav-register': () => {
+                hideViews();
+                document.getElementById('nav-register').classList.add('active');
+                document.getElementById('form-container').style.display = 'block';
+            },
+            'nav-ist': () => {
+                hideViews();
+                document.getElementById('nav-ist').classList.add('active');
+                document.getElementById('ist-container').style.display = 'block';
+            },
+            'nav-procedimentos': () => {
+                hideViews();
+                document.getElementById('nav-procedimentos').classList.add('active');
+                document.getElementById('procedimentos-container').style.display = 'block';
+            },
+            'nav-consultas': () => {
+                hideViews();
+                document.getElementById('nav-consultas').classList.add('active');
+                document.getElementById('consultas-container').style.display = 'block';
+            },
+
+           'nav-reports': () => {
+                hideViews();
+                document.getElementById('nav-reports').classList.add('active');
+                document.getElementById('reports-container').style.display = 'block';
+
+                // PROTEÇÃO: Garante que as variáveis de RN existam para não travar a tela
+                if (typeof allRNs === 'undefined') window.allRNs = [];
+                if (typeof allRNConsultas === 'undefined') window.allRNConsultas = [];
+
+                const list = rawGestantes.filter(g => !g.finalizada && g.area_paciente === currentArea);
+                const semConsulta = [], emAtraso = [], istAlterado = [], semIst = [];
+                const avaliarConsultas = [];
+                
+                const avaliarRNConsultas = [];
+                const rnPendentesAgendamento = [];
+
+                const hoje = new Date(); 
+                hoje.setHours(0, 0, 0, 0);
+                const limiteOntem = new Date(hoje);
+                limiteOntem.setDate(hoje.getDate() - 1);
+
+                // --- BUSCA ATIVA: GESTANTES ---
+                list.forEach(g => {
+                    const pendentes = allConsultas.filter(c => 
+                        c.gestante_id === g.id && 
+                        c.status === 'Agendada' && 
+                        new Date(c.data_consulta + 'T00:00:00') <= limiteOntem
+                    );
+                    if (pendentes.length > 0) avaliarConsultas.push({ gestante: g, consultas: pendentes });
+
+                    const cons = allConsultas
+                        .filter(c => c.gestante_id === g.id && c.status === 'Compareceu')
+                        .sort((a, b) => new Date(b.data_consulta) - new Date(a.data_consulta)); 
+                    if (cons.length === 0) semConsulta.push(g);
+                    else {
+                        const ultimaData = new Date(cons[0].data_consulta + 'T00:00:00');
+                        const diffDias = Math.floor((hoje - ultimaData) / (1000 * 60 * 60 * 24));
+                        if (diffDias > 35) emAtraso.push({ gestante: g, dias: diffDias, ultimaData: cons[0].data_consulta });
+                    }
+
+                    const ist = allIst.find(i => i.gestante_id === g.id);
+                    if (!ist || (!ist.sifilis_1t_resultado && !ist.hiv_1t_resultado)) semIst.push(g);
+                    else {
+                        const reagentes = [];
+                        if (ist.sifilis_1t_resultado === 'Reagente' || ist.sifilis_2t_resultado === 'Reagente' || ist.sifilis_3t_resultado === 'Reagente') reagentes.push('Sífilis');
+                        if (ist.hiv_1t_resultado === 'Reagente' || ist.hiv_2t_resultado === 'Reagente' || ist.hiv_3t_resultado === 'Reagente') reagentes.push('HIV');
+                        if (ist.hepb_1t_resultado === 'Reagente' || ist.hepb_3t_resultado === 'Reagente') reagentes.push('Hepatite B');
+                        if (ist.hepc_1t_resultado === 'Reagente' || ist.hepc_3t_resultado === 'Reagente') reagentes.push('Hepatite C');
+                        if (reagentes.length > 0) istAlterado.push({ gestante: g, exames: reagentes.join(', ') });
+                    }
+                });
+
+                // --- BUSCA ATIVA: RECEM-NASCIDOS (RN) ---
+                const rnsDaEquipe = allRNs.filter(r => r.area_paciente === currentArea);
+                
+                const cronogramaMarcos = [
+                    { id: '< 7 dias', diasLimite: 7, prof: 'Enfermeiro ou Médico' },
+                    { id: '15 dias', diasLimite: 15, prof: 'Médico' },
+                    { id: '1 mês', diasLimite: 30, prof: 'Médico ou Enfermeiro' },
+                    { id: '2 meses', diasLimite: 60, prof: 'Médico' },
+                    { id: '3 meses', diasLimite: 90, prof: 'Enfermeiro + Assist. Social' },
+                    { id: '4 meses', diasLimite: 120, prof: 'Médico + Nutricionista' },
+                    { id: '5 meses', diasLimite: 150, prof: 'Enfermeiro' },
+                    { id: '6 meses', diasLimite: 180, prof: 'Médico e alta' }
+                ];
+
+                rnsDaEquipe.forEach(rn => {
+                    const rnsConsultas = allRNConsultas.filter(c => c.rn_id === rn.id);
+                    const dataNasc = new Date(rn.data_nascimento + 'T00:00:00');
+                    const idadeEmDias = Math.floor((hoje - dataNasc) / (1000 * 60 * 60 * 24));
+
+                    const rnVencidas = rnsConsultas.filter(c => 
+                        c.status === 'Agendado' && 
+                        new Date(c.data_consulta + 'T00:00:00') <= limiteOntem
+                    );
+                    if (rnVencidas.length > 0) avaliarRNConsultas.push({ rn: rn, consultas: rnVencidas });
+
+                    const marcosPerdidos = [];
+                    cronogramaMarcos.forEach(marco => {
+                        if (idadeEmDias >= marco.diasLimite) {
+                            const temRegistro = rnsConsultas.some(c => c.marco === marco.id && (c.status === 'Compareceu' || c.status === 'Agendado'));
+                            if (!temRegistro) marcosPerdidos.push(marco);
+                        }
+                    });
+
+                    if (marcosPerdidos.length > 0) rnPendentesAgendamento.push({ rn: rn, marcos: marcosPerdidos });
+                });
+
+                // --- RENDERIZAÇÃO ---
+                document.getElementById('report-content').innerHTML = `
+                    <div style="display: grid; gap: 20px;">
+                        
+                        <fieldset style="border-color: #ec4899; background: white;"><legend style="color: #ec4899;"><i data-lucide="baby"></i> ⏳ Avaliar Status de Consulta - RN (${avaliarRNConsultas.length})</legend>
+                            ${avaliarRNConsultas.map(item => `
+                                <div class="gestante-card" style="border-left: 5px solid #ec4899;">
+                                    <div style="flex:1;">
+                                        <h4>${item.rn.nome}</h4>
+                                        <small style="color:#db2777; font-weight: bold;">Consultas de acompanhamento passadas sem confirmação:</small>
+                                        <div style="margin-top: 4px; font-size: 12px; color: #475569;">
+                                            ${item.consultas.map(c => `⬢ <b>${c.marco}</b> - Agendada para: ${new Date(c.data_consulta + 'T00:00:00').toLocaleDateString('pt-BR')}`).join('<br>')}
+                                        </div>
+                                    </div>
+                                    <button onclick="window.abrirAcompanhamentoRN('${item.rn.id}')" style="background:#ec4899; padding: 8px 15px;">Atualizar RN</button>
+                                </div>
+                            `).join('') || '<p>Nenhuma consulta de RN aguardando atualização de status.</p>'}
+                        </fieldset>
+
+                        <fieldset style="border-color: #06b6d4; background: white;"><legend style="color: #06b6d4;"><i data-lucide="calendar-plus"></i> RN Falta Agendamento (Por Idade) - RN (${rnPendentesAgendamento.length})</legend>
+                            ${rnPendentesAgendamento.map(item => `
+                                <div class="gestante-card" style="border-left: 5px solid #06b6d4;">
+                                    <div style="flex:1;">
+                                        <h4>${item.rn.nome}</h4>
+                                        <small style="color:#0891b2; font-weight: bold;">Marcos de idade atingidos sem consulta registrada:</small>
+                                        <div style="margin-top: 4px; font-size: 12px; color: #475569;">
+                                            ${item.marcos.map(m => `⬢ Marco: <b>${m.id}</b> ? Agendar com: <span style="background: #ecfdf5; color: #047857; padding: 1px 4px; border-radius: 4px; font-weight: bold;">${m.prof}</span>`).join('<br>')}
+                                        </div>
+                                    </div>
+                                    <button onclick="window.abrirAcompanhamentoRN('${item.rn.id}')" style="background:#06b6d4; padding: 8px 15px;">Abrir Linha do Tempo</button>
+                                </div>
+                            `).join('') || '<p>Todos os recém-nascidos estão com seus agendamentos em dia de acordo com a idade.</p>'}
+                        </fieldset>
+
+                        <fieldset style="border-color: #ea580c; background: white;"><legend style="color: #ea580c;"><i data-lucide="calendar-clock"></i> ⏳ Avaliar Status de Consulta - Gestante (${avaliarConsultas.length})</legend>
+                            ${avaliarConsultas.map(item => `
+                                <div class="gestante-card" style="border-left: 5px solid #ea580c;">
+                                    <div style="flex:1;">
+                                        <h4>${item.gestante.nome}</h4>
+                                        <small style="color:#c2410c; font-weight: bold;">Consultas agendadas que já passaram/ocorreram:</small>
+                                        <div style="margin-top: 4px; font-size: 12px; color: #475569;">
+                                            ${item.consultas.map(c => `⬢ <b>${new Date(c.data_consulta + 'T00:00:00').toLocaleDateString('pt-BR')}</b> - Atendimento: ${c.tipo_consulta}`).join('<br>')}
+                                        </div>
+                                    </div>
+                                    <button onclick="window.irParaConsulta('${item.gestante.id}')" style="background:#ea580c; padding: 8px 15px;">Atualizar Status</button>
+                                </div>
+                            `).join('') || '<p>Nenhuma consulta agendada aguardando atualização de status.</p>'}
+                        </fieldset>
+
+                        <fieldset style="border-color: #8b5cf6; background: white;"><legend style="color: #8b5cf6;"><i data-lucide="activity"></i>  IST Reagente (${istAlterado.length})</legend>
+                            ${istAlterado.map(item => `<div class="gestante-card" style="border-left: 5px solid #8b5cf6;"><div style="flex:1;"><h4>${item.gestante.nome}</h4><small style="color:#ef4444; font-weight: bold;">Detectado: ${item.exames}</small></div><button onclick="window.editG('${item.gestante.id}')" style="background:#8b5cf6; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Nenhum exame IST reagente nesta equipe.</p>'}
+                        </fieldset>
+                        <fieldset style="border-color: #ef4444; background: white;"><legend style="color: #ef4444;"><i data-lucide="alert-triangle"></i> Atenção Atraso > 35 dias (${emAtraso.length})</legend>
+                            ${emAtraso.map(item => `<div class="gestante-card" style="border-left: 5px solid #ef4444;"><div style="flex:1;"><h4>${item.gestante.nome}</h4><small>Ultima consulta: ${new Date(item.ultimaData + 'T00:00:00').toLocaleDateString('pt-BR')} <b>(${item.dias} dias atrás)</b></small></div><button onclick="window.editG('${item.gestante.id}')" style="background:#ef4444; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Nenhuma gestante em atraso neste momento.</p>'}
+                        </fieldset>
+                        <fieldset style="border-color: #64748b; background: white;"><legend style="color: #64748b;"><i data-lucide="file-question"></i> Pendência Pendência de Exames IST (${semIst.length})</legend>
+                            ${semIst.map(g => `<div class="gestante-card" style="border-left: 5px solid #64748b;"><div style="flex:1;"><h4>${g.nome}</h4><small>Sem resultados de Sífilis/HIV registrados no painel.</small></div><button onclick="window.editG('${g.id}')" style="background:#64748b; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Todas as gestantes possuem registro base de IST.</p>'}
+                        </fieldset>
+                        <fieldset style="border-color: #f59e0b; background: white;"><legend style="color: #f59e0b;"><i data-lucide="alert-circle"></i> Atenção Sem Nenhuma Consulta (${semConsulta.length})</legend>
+                            ${semConsulta.map(g => `<div class="gestante-card" style="border-left: 5px solid #f59e0b;"><div style="flex:1;"><h4>${g.nome}</h4><small>Nenhum atendimento lançado no painel.</small></div><button onclick="window.editG('${g.id}')" style="background:#f59e0b; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Todas as gestantes possuem ao menos uma consulta registrada.</p>'}
+                        </fieldset>
+                    </div>
+                `;
+                if (window.lucide) window.lucide.createIcons();
+            },
+            
+            'nav-indicador-c3': () => {
+                hideViews();
+                document.getElementById('nav-indicador-c3').classList.add('active');
+                document.getElementById('indicador-c3-container').style.display = 'block';
+                const list = rawGestantes.filter(g => !g.finalizada && g.area_paciente === currentArea);
+
+                document.getElementById('indicador-c3-content').innerHTML = `
+                    <h3>Indicadores Previne Brasil - Equipe ${currentArea}</h3>
+                    <div style="overflow-x:auto;">
+                        <table class="results-table">
+                            <tr><th>Nome</th><th>Início <12s</th><th>6+ Cons</th><th>Odonto</th><th>Exames</th></tr>
+                            ${list.map(g => {
+                    const stats = calculateC3(g);
+                    return `<tr><td>${g.nome}</td>
+                                    <td><span class="status-pill ${stats.capturesEarly ?'status-ok' : 'status-pending'}">${stats.capturesEarly ?'OK' : 'PEND'}</span></td>
+                                    <td><span class="status-pill ${stats.has6PlusConsults ?'status-ok' : 'status-pending'}">${stats.has6PlusConsults ?'OK' : 'PEND'}</span></td>
+                                    <td><span class="status-pill ${stats.hasOdonto ?'status-ok' : 'status-pending'}">${stats.hasOdonto ?'OK' : 'PEND'}</span></td>
+                                    <td><span class="status-pill ${stats.hasIST ?'status-ok' : 'status-pending'}">${stats.hasIST ?'OK' : 'PEND'}</span></td>
+                                </tr>`;
+                }).join('')}
+                        </table>
+                    </div>
+                `;
+            },
+            'nav-finalizadas': () => {
+                hideViews();
+                document.getElementById('nav-finalizadas').classList.add('active');
+                document.getElementById('finalizadas-container').style.display = 'block';
+                const list = rawGestantes.filter(g => g.finalizada && g.area_paciente === currentArea);
+                document.getElementById('finalizadas-list').innerHTML = `
+                    <h3>Pré-Natal Finalizado - Equipe ${currentArea}</h3>
+                    <table class="results-table">
+                        <tr><th>Nome</th><th>Data</th><th>Motivo</th></tr>
+                        ${list.map(g => `<tr><td>${g.nome}</td><td>${new Date(g.data_finalizacao + 'T00:00:00').toLocaleDateString()}</td><td>${g.motivo_finalizacao}</td></tr>`).join('') || '<tr><td colspan="3">Nenhum registro.</td></tr>'}
+                    </table>
+                `;
+            },
+            'nav-backup': () => {
+                hideViews();
+                document.getElementById('nav-backup').classList.add('active');
+                document.getElementById('backup-container').style.display = 'block';
+            },
+            'nav-apoiador': () => {
+                hideViews();
+                document.getElementById('nav-apoiador').classList.add('active');
+                document.getElementById('apoiador-container').style.display = 'block';
+                renderApoiadorDashboard();
+            },
+            'nav-acessos': () => {
+                hideViews();
+                if (!isAccessManager()) return;
+                document.getElementById('nav-acessos').classList.add('active');
+                document.getElementById('acessos-container').style.display = 'block';
+                renderAccessUsers();
+            },
+            'nav-logs': () => {
+                hideViews();
+                document.getElementById('nav-logs').classList.add('active');
+                document.getElementById('logs-container').style.display = 'block';
+
+                const sortedLogs = allLogs.sort((a, b) => new Date(b.data_hora) - new Date(a.data_hora)).slice(0, 50);
+
+                document.getElementById('logs-list-content').innerHTML = `
+                    <table class="results-table">
+                        <tr><th>Data / Hora</th><th>Ação</th><th>Detalhe</th><th>Equipe</th><th>Unidade</th><th>Perfil</th><th>Usuário</th></tr>
+                        ${sortedLogs.map(l => `
+                            <tr>
+                                <td>${new Date(l.data_hora).toLocaleString('pt-BR')}</td>
+                                <td><span style="font-weight: bold; color: var(--primary-color);">${l.acao}</span></td>
+                                <td>${l.detalhe}</td>
+                                <td>${l.equipe || '--'}</td>
+                                <td>${l.unidade || '--'}</td>
+                                <td>${l.usuario_perfil || '--'}</td>
+                                <td>${l.usuario_email || '--'}</td>
+                            </tr>
+                        `).join('') || '<tr><td colspan="7">Nenhum histórico registrado.</td></tr>'}
+                    </table>
+                `;
+            }
+        };
+
+        const snapshotList = async (name) => {
+            const snap = await getDocs(dbListRef(name));
+            const data = {};
+            snap.forEach((documento) => {
+                data[documento.id] = documento.data() || {};
+            });
+            return data;
+        };
+
+        const exportFullBackup = async () => {
+            if (!requireAuth()) return;
+            const backup = {
+                tipo: 'controle_gestantes_backup',
+                unidade: window.fb.unidadeAtual,
+                unidade_label: firebaseConfigsPorUnidade[window.fb.unidadeAtual]?.label || '',
+                gerado_em: new Date().toISOString(),
+                gerado_por: getCurrentUser()?.email || '',
+                data: {}
+            };
+            for (const name of DATA_LISTS) backup.data[name] = await snapshotList(name);
+            const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `backup_${window.fb.unidadeAtual}_${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            registrarLog('Exportou Backup', `Unidade: ${window.fb.unidadeAtual}`, { colecao: 'backup' });
+        };
+
+        const importFullBackup = async () => {
+            if (!requireAuth()) return;
+            const file = document.getElementById('backup-file').files[0];
+            const status = document.getElementById('backup-status');
+            if (!file) {
+                status.textContent = 'Selecione um arquivo JSON.';
+                return;
+            }
+            const overwrite = document.getElementById('import-overwrite').checked;
+            try {
+                const payload = JSON.parse(await file.text());
+                const data = payload.data || payload;
+                let imported = 0;
+                let skipped = 0;
+                for (const listName of DATA_LISTS) {
+                    const items = data[listName] || {};
+                    for (const [id, item] of Object.entries(items)) {
+                        const exists = await getDoc(window.fb.dbItemRef(listName, id));
+                        if (exists.exists() && !overwrite) {
+                            skipped++;
+                            continue;
+                        }
+                        await setItem(listName, id, item || {});
+                        imported++;
+                    }
+                }
+                status.textContent = `Importação concluída: ${imported} registros importados, ${skipped} ignorados.`;
+                registrarLog('Importou Backup', `Importados: ${imported} | Ignorados: ${skipped}`, { colecao: 'backup' });
+            } catch (error) {
+                status.textContent = `Erro ao importar: ${error.message}`;
+            }
+        };
+
+        const normalizeImportedCollection = (value, prefix) => {
+            if (!value) return {};
+            if (Array.isArray(value)) {
+                return Object.fromEntries(value
+                    .filter(item => item && typeof item === 'object')
+                    .map((item, index) => [String(item.id || `${prefix}_${index + 1}`), item]));
+            }
+            if (typeof value === 'object') return value;
+            return {};
+        };
+
+        const findLegacyCollection = (payload, listName) => {
+            const roots = [
+                payload?.data,
+                payload?.unidades?.dutra,
+                payload?.unidades?.vila_dutra,
+                payload?.unidades?.['vila-dutra'],
+                payload
+            ];
+            for (const root of roots) {
+                if (root && root[listName]) return root[listName];
+            }
+            return {};
+        };
+
+        const normalizePersonalDatabasePayload = (payload) => {
+            const normalized = {};
+            DATA_LISTS.forEach(listName => {
+                normalized[listName] = normalizeImportedCollection(findLegacyCollection(payload, listName), listName);
+            });
+            return normalized;
+        };
+
+        const writeImportedDataToDutra = async (data, overwrite) => {
+            const previousUnit = window.fb.unidadeAtual;
+            if (previousUnit !== 'dutra') switchUnit('dutra');
+
+            let imported = 0;
+            let skipped = 0;
+            for (const listName of DATA_LISTS) {
+                const items = data[listName] || {};
+                for (const [id, item] of Object.entries(items)) {
+                    if (!item || typeof item !== 'object') continue;
+                    const cleanId = String(id || '').trim();
+                    if (!cleanId) continue;
+                    const exists = await getDoc(window.fb.dbItemRef(listName, cleanId));
+                    if (exists.exists() && !overwrite) {
+                        skipped++;
+                        continue;
+                    }
+                    const { id: ignoredId, ...payload } = item;
+                    await setItem(listName, cleanId, payload);
+                    imported++;
+                }
+            }
+            return { imported, skipped };
+        };
+
+        const importPersonalDatabaseToDutra = async () => {
+            if (!requireAuth()) return;
+            const status = document.getElementById('backup-status');
+            const urlInput = document.getElementById('personal-db-url');
+            const overwrite = document.getElementById('import-overwrite').checked;
+            let url = urlInput.value.trim();
+            if (!url) {
+                status.textContent = 'Cole a URL do banco pessoal antes de importar.';
+                return;
+            }
+            if (/firebaseio\.com\/?$|firebasedatabase\.app\/?$/i.test(url)) {
+                url = url.replace(/\/?$/, '/.json');
+            } else if (/(firebaseio\.com|firebasedatabase\.app)\//i.test(url) && !/\.json(\?|$)/i.test(url)) {
+                url = url.replace(/\/?$/, '.json');
+            }
+
+            try {
+                status.textContent = 'Lendo banco pessoal...';
+                localStorage.setItem('gestantes_personal_db_url', url);
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`não foi possível ler a URL (${response.status})`);
+                const payload = await response.json();
+                const normalized = normalizePersonalDatabasePayload(payload);
+                const total = DATA_LISTS.reduce((sum, listName) => sum + Object.keys(normalized[listName] || {}).length, 0);
+                if (!total) throw new Error('nenhuma lista reconhecida foi encontrada no JSON.');
+
+                status.textContent = `Migrando ${total} registros para Dutra...`;
+                const { imported, skipped } = await writeImportedDataToDutra(normalized, overwrite);
+                status.textContent = `Migração concluída para Dutra: ${imported} registros importados, ${skipped} ignorados.`;
+                registrarLog('Migrou Banco Pessoal', `Importados: ${imported} | Ignorados: ${skipped}`, { colecao: 'backup', origem: 'banco_pessoal' });
+                if (!dataInitialized) initData();
+            } catch (error) {
+                status.textContent = `Erro na migração: ${error.message}`;
+            }
+        };
+
+        const getUnitCollectionData = async (unitId, listName) => {
+            const unidade = firebaseConfigsPorUnidade[unitId];
+            if (!unidade?.databasePath) return [];
+            const snap = await getDocs(collection(window.fb.db, `${unidade.databasePath}/${listName}`));
+            return snap.docs.map((documento) => ({ id: documento.id, ...(documento.data() || {}) }));
+        };
+
+        const renderApoiadorDashboard = async () => {
+            const select = document.getElementById('apoiador-unidade-select');
+            const selectedUnit = select.value || window.fb.unidadeAtual;
+            select.innerHTML = Object.entries(firebaseConfigsPorUnidade)
+                .map(([id, unidade]) => `<option value="${id}" ${id === selectedUnit ? 'selected' : ''}>${unidade.label}</option>`)
+                .join('');
+
+            document.getElementById('apoiador-dashboard').innerHTML = `
+                <div class="report-card"><h4>Carregando unidade</h4><div class="count">...</div></div>
+            `;
+            document.getElementById('apoiador-detail').innerHTML = '';
+
+            try {
+                const [gestantesData, consultasData, istData, rnsData] = await Promise.all([
+                    getUnitCollectionData(selectedUnit, 'gestantes'),
+                    getUnitCollectionData(selectedUnit, 'consultas'),
+                    getUnitCollectionData(selectedUnit, 'ist_resultados'),
+                    getUnitCollectionData(selectedUnit, 'rn_defesa_vida')
+                ]);
+
+                const ativas = gestantesData
+                    .map(g => ({ ...g, area_paciente: normalizeArea(g.area_paciente) }))
+                    .filter(g => !g.finalizada);
+                const altoRisco = ativas.filter(g => g.risco_gestacional === 'ALTO RISCO');
+                const semConsulta = ativas.filter(g => !consultasData.some(c => c.gestante_id === g.id));
+                const semIst = ativas.filter(g => !istData.some(i => i.gestante_id === g.id));
+                const rnAtivos = rnsData.length;
+                const unidadeLabel = firebaseConfigsPorUnidade[selectedUnit]?.label || 'Unidade';
+                const equipes = getUnitTeams(selectedUnit);
+
+                document.getElementById('apoiador-dashboard').innerHTML = `
+                    <div class="report-card"><h4>Equipes</h4><div class="count">${equipes.length}</div></div>
+                    <div class="report-card"><h4>Gestantes Ativas</h4><div class="count">${ativas.length}</div></div>
+                    <div class="report-card warning"><h4>Alto Risco</h4><div class="count">${altoRisco.length}</div></div>
+                    <div class="report-card"><h4>Sem Consulta</h4><div class="count">${semConsulta.length}</div></div>
+                    <div class="report-card"><h4>IST Pendente</h4><div class="count">${semIst.length}</div></div>
+                    <div class="report-card"><h4>RN Defesa da Vida</h4><div class="count">${rnAtivos}</div></div>
+                `;
+                document.getElementById('apoiador-detail').innerHTML = `
+                    <h4>${escapeHtml(unidadeLabel)} - leitura por equipe</h4>
+                    <table class="results-table">
+                        <tr><th>Equipe</th><th>Ativas</th><th>Alto risco</th><th>Sem consulta</th><th>IST pendente</th></tr>
+                        ${equipes.map(area => {
+                            const areaGestantes = ativas.filter(g => g.area_paciente === area);
+                            return `<tr>
+                                <td>${area}</td>
+                                <td>${areaGestantes.length}</td>
+                                <td>${areaGestantes.filter(g => g.risco_gestacional === 'ALTO RISCO').length}</td>
+                                <td>${areaGestantes.filter(g => !consultasData.some(c => c.gestante_id === g.id)).length}</td>
+                                <td>${areaGestantes.filter(g => !istData.some(i => i.gestante_id === g.id)).length}</td>
+                            </tr>`;
+                        }).join('')}
+                    </table>
+                    <h4 style="margin-top:22px;">Pontos de atenção</h4>
+                    <table class="results-table">
+                        <tr><th>Indicador</th><th>Quantidade</th></tr>
+                        <tr><td>Gestantes de alto risco</td><td>${altoRisco.length}</td></tr>
+                        <tr><td>Gestantes sem consulta registrada</td><td>${semConsulta.length}</td></tr>
+                        <tr><td>Gestantes com IST pendente</td><td>${semIst.length}</td></tr>
+                        <tr><td>Recém-nascidos no Defesa da Vida</td><td>${rnAtivos}</td></tr>
+                    </table>
+                `;
+            } catch (error) {
+                document.getElementById('apoiador-dashboard').innerHTML = '';
+                document.getElementById('apoiador-detail').innerHTML = `<p style="color:#ef4444;">Não foi possível carregar esta unidade: ${escapeHtml(error.message)}</p>`;
+            }
+            if (window.lucide) lucide.createIcons();
+        };
+
+        // EVENTOS DE GESTANTE
+        document.getElementById('gestante-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!requireAuth()) return;
+            const id = document.getElementById('edit-id').value;
+            const data = {
+                nome: document.getElementById('nome').value,
+                area_paciente: normalizeArea(document.getElementById('area_paciente').value),
+                cns: document.getElementById('cns').value,
+                dum: document.getElementById('dum').value,
+                data_nascimento: document.getElementById('data_nascimento').value,
+                risco_gestacional: document.getElementById('risco_gestacional').value,
+                data_abertura_prenatal: document.getElementById('data_abertura_prenatal').value,
+                finalizada: false
+            };
+            try {
+                if (id) {
+                    await updateItem('gestantes', id, data);
+                    registrarLog('Atualizou Ficha', `Nome: ${data.nome}`);
+                } else {
+                    await addItem('gestantes', data);
+                    registrarLog('Novo Cadastro', `Nome: ${data.nome}`);
+                }
+                showNotify("Cadastro salvo com sucesso!");
+                window.cancelEdit();
+                navActions['nav-list']();
+            } catch (e) { showNotify(e.message, 'error'); }
+        };
+
+        window.editG = (id) => {
+            const g = rawGestantes.find(x => x.id === id);
+            if (!g) return;
+            document.getElementById('edit-id').value = id;
+            document.getElementById('nome').value = g.nome;
+            document.getElementById('area_paciente').value = g.area_paciente;
+            document.getElementById('cns').value = g.cns || '';
+            document.getElementById('dum').value = g.dum;
+            document.getElementById('data_nascimento').value = g.data_nascimento;
+            document.getElementById('risco_gestacional').value = g.risco_gestacional;
+            document.getElementById('data_abertura_prenatal').value = g.data_abertura_prenatal || '';
+
+            document.getElementById('save-btn').textContent = "Atualizar Cadastro";
+            document.getElementById('cancel-btn').style.display = "block";
+            navActions['nav-register']();
+        };
+
+        window.cancelEdit = () => {
+            document.getElementById('gestante-form').reset();
+            document.getElementById('edit-id').value = '';
+            document.getElementById('save-btn').textContent = "Salvar Cadastro";
+            document.getElementById('cancel-btn').style.display = "none";
+        };
+        document.getElementById('cancel-btn').onclick = window.cancelEdit;
+
+        // EVENTOS DE IST
+        const toggleSeguimentoSifilis = () => {
+            const form = document.getElementById('ist-form');
+            const selectsSifilis = form.querySelectorAll('.check-sifilis');
+            let temReagente = false;
+            selectsSifilis.forEach(sel => { if (sel.value === 'Reagente') temReagente = true; });
+            document.getElementById('seguimento-clinico-area').style.display = temReagente ?'block' : 'none';
+        };
+
+        window.loadIstData = (gId) => {
+            const area = document.getElementById('ist-form-area');
+            if (!gId) { area.style.display = 'none'; return; }
+            const data = allIst.find(i => i.gestante_id === gId) || {};
+            const form = document.getElementById('ist-form');
+            form.reset();
+
+            Object.keys(data).forEach(k => {
+                const inputElement = form.querySelector(`[name="${k}"]`);
+                if (inputElement) inputElement.value = data[k] || '';
+            });
+
+            toggleSeguimentoSifilis();
+            area.style.display = 'block';
+        };
+
+        document.addEventListener('change', (e) => {
+            if (e.target.classList.contains('check-sifilis')) toggleSeguimentoSifilis();
+        });
+
+        document.getElementById('ist-gestante-select').onchange = (e) => {
+            window.loadIstData(e.target.value);
+        };
+
+        document.getElementById('ist-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!requireAuth()) return;
+            const gId = document.getElementById('ist-gestante-select').value;
+            const gNome = document.getElementById('ist-gestante-select').options[document.getElementById('ist-gestante-select').selectedIndex].text;
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData.entries());
+            data.gestante_id = gId;
+            data.equipeId = rawGestantes.find(g => g.id === gId)?.area_paciente || currentArea;
+            const existing = allIst.find(i => i.gestante_id === gId);
+            try {
+                if (existing) {
+                    await updateItem('ist_resultados', existing.id, data);
+                    registrarLog('Atualizou IST', `Paciente: ${gNome}`);
+                } else {
+                    await addItem('ist_resultados', data);
+                    registrarLog('Registrou IST', `Paciente: ${gNome}`);
+                }
+                showNotify("Controle de IST atualizado!");
+            } catch (e) { showNotify("Erro ao salvar exames.", "error"); }
+        };
+
+        // PROCEDIMENTOS
+        document.getElementById('procedimento-gestante-select').onchange = (e) => {
+            const gId = e.target.value;
+            const area = document.getElementById('procedimento-content');
+            if (!gId) { area.style.display = 'none'; return; }
+            area.style.display = 'block';
+            window.loadProcHistory(gId);
+        };
+
+        window.loadProcHistory = (gId) => {
+            const history = allProcedimentos.filter(p => p.gestante_id === gId).sort((a, b) => new Date(b.data_procedimento) - new Date(a.data_procedimento));
+            document.getElementById('procedimentos-history-area').innerHTML = `
+                <h4 style="margin-top:20px;">Histórico de Pressão e Peso</h4>
+                <table class="results-table">
+                    <tr><th>Data</th><th>PA</th><th>Peso</th></tr>
+                    ${history.map(p => `<tr>
+                        <td>${new Date(p.data_procedimento + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                        <td>${p.pa || '--'}</td>
+                        <td>${p.peso ?p.peso + 'kg' : '--'}</td>
+                    </tr>`).join('') || '<tr><td colspan="3">Nenhum registro encontrado.</td></tr>'}
+                </table>
+            `;
+        };
+
+        document.getElementById('procedimento-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!requireAuth()) return;
+            const gId = document.getElementById('procedimento-gestante-select').value;
+            const gNome = document.getElementById('procedimento-gestante-select').options[document.getElementById('procedimento-gestante-select').selectedIndex].text;
+            const data = {
+                gestante_id: gId,
+                equipeId: rawGestantes.find(g => g.id === gId)?.area_paciente || currentArea,
+                data_procedimento: document.getElementById('proc-data').value,
+                pa: document.getElementById('proc-pa').value,
+                peso: document.getElementById('proc-peso').value
+            };
+            try {
+                await addItem('procedimentos', data);
+                registrarLog('Aferiu PA/Peso', `Paciente: ${gNome}`);
+                showNotify("Procedimento registrado!");
+                e.target.reset();
+                window.loadProcHistory(gId);
+            } catch (e) { showNotify("Erro ao salvar", "error"); }
+        };
+
+        // CONSULTAS
+        document.getElementById('consulta-gestante-select').onchange = (e) => {
+            const gId = e.target.value;
+            const area = document.getElementById('consulta-content');
+            if (!gId) { area.style.display = 'none'; return; }
+            area.style.display = 'block';
+
+            // Limpa qualquer edição pendente ao trocar de paciente
+            document.getElementById('consulta-form').reset();
+            document.getElementById('edit-cons-id').value = '';
+            document.getElementById('btn-save-cons').textContent = 'Registrar Atendimento';
+            document.getElementById('btn-cancel-cons').style.display = 'none';
+
+            window.loadConsHistory(gId);
+        };
+
+        window.loadConsHistory = (gId) => {
+            const history = allConsultas.filter(c => c.gestante_id === gId).sort((a, b) => new Date(b.data_consulta) - new Date(a.data_consulta));
+            document.getElementById('consultas-history-area').innerHTML = `
+                <h4 style="margin-top:20px;">Histórico de Atendimentos</h4>
+                <table class="results-table">
+                    <tr><th>Data</th><th>Tipo</th><th>Status</th><th>Ações</th></tr>
+                    ${history.map(c => {
+                let color = c.status === 'Compareceu' ?'#16a34a' : (c.status === 'Faltou' ?'#dc2626' : '#2563eb');
+                return `<tr>
+                            <td>${new Date(c.data_consulta + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                            <td>${c.tipo_consulta || '--'}</td>
+                            <td style="color: ${color}; font-weight: bold;">${c.status || 'Compareceu'}</td>
+                            <td style="text-align: center;">
+                                <button onclick="window.editConsulta('${c.id}')" style="background: #f59e0b; padding: 6px 12px; font-size: 0.8rem;">Editar</button>
+                            </td>
+                        </tr>`;
+            }).join('') || '<tr><td colspan="4">Nenhum atendimento registrado.</td></tr>'}
+                </table>
+            `;
+        };
+
+        window.editConsulta = (id) => {
+            const c = allConsultas.find(x => x.id === id);
+            if (!c) return;
+            document.getElementById('edit-cons-id').value = id;
+            document.getElementById('cons-data').value = c.data_consulta;
+            document.getElementById('cons-tipo').value = c.tipo_consulta;
+            document.getElementById('cons-status').value = c.status || 'Compareceu';
+
+            document.getElementById('btn-save-cons').textContent = 'Atualizar Atendimento';
+            document.getElementById('btn-cancel-cons').style.display = 'block';
+        };
+
+        // FUNÇÃO NOVA: Cancelar a edição
+        document.getElementById('btn-cancel-cons').onclick = () => {
+            document.getElementById('consulta-form').reset();
+            document.getElementById('edit-cons-id').value = '';
+            document.getElementById('btn-save-cons').textContent = 'Registrar Atendimento';
+            document.getElementById('btn-cancel-cons').style.display = 'none';
+        };
+
+        document.getElementById('consulta-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!requireAuth()) return;
+            const editId = document.getElementById('edit-cons-id').value;
+            const gId = document.getElementById('consulta-gestante-select').value;
+            const gNome = document.getElementById('consulta-gestante-select').options[document.getElementById('consulta-gestante-select').selectedIndex].text;
+            const tipo = document.getElementById('cons-tipo').value;
+            const status = document.getElementById('cons-status').value;
+
+            const data = {
+                gestante_id: gId,
+                equipeId: rawGestantes.find(g => g.id === gId)?.area_paciente || currentArea,
+                data_consulta: document.getElementById('cons-data').value,
+                tipo_consulta: tipo,
+                status: status
+            };
+
+            try {
+                if (editId) {
+                    await updateItem('consultas', editId, data);
+                    registrarLog('Atualizou Consulta', `Status: ${status} | Tipo: ${tipo} | Paciente: ${gNome}`);
+                    showNotify("Atendimento atualizado!");
+                } else {
+                    await addItem('consultas', data);
+                    registrarLog('Registrou Consulta', `Status: ${status} | Tipo: ${tipo} | Paciente: ${gNome}`);
+                    showNotify("Atendimento registrado!");
+                }
+
+                // Reseta tudo após salvar
+                e.target.reset();
+                document.getElementById('edit-cons-id').value = '';
+                document.getElementById('btn-save-cons').textContent = 'Registrar Atendimento';
+                document.getElementById('btn-cancel-cons').style.display = 'none';
+
+                window.loadConsHistory(gId);
+            } catch (e) { showNotify("Erro ao salvar", "error"); }
+        };
+
+        // EXCLUSAO DE GESTANTE
+        window.deletarGestante = async (id) => {
+            if (!requireAuth()) return;
+            const gestante = rawGestantes.find(g => g.id === id);
+            const nome = gestante?.nome || 'esta gestante';
+            const confirmacao = confirm(`ATENCAO!\n\nTem certeza que deseja deletar a gestante "${nome}"?\n\nIsso excluira PERMANENTEMENTE todos os registros, controle de IST, procedimentos e consultas referentes a ela. Essa acao nao pode ser desfeita.`);
+            
+            if (confirmacao) {
+                try {
+                    // 1. Deletar a gestante do banco
+                    await deleteItem('gestantes', id);
+
+                    // 2. Deletar Consultas Vinculadas
+                    const consultasPraDeletar = allConsultas.filter(c => c.gestante_id === id);
+                    for (const c of consultasPraDeletar) {
+                        await deleteItem('consultas', c.id);
+                    }
+
+                    // 3. Deletar Procedimentos Vinculados
+                    const procedimentosPraDeletar = allProcedimentos.filter(p => p.gestante_id === id);
+                    for (const p of procedimentosPraDeletar) {
+                        await deleteItem('procedimentos', p.id);
+                    }
+
+                    // 4. Deletar IST Vinculado
+                    const istPraDeletar = allIst.filter(i => i.gestante_id === id);
+                    for (const i of istPraDeletar) {
+                        await deleteItem('ist_resultados', i.id);
+                    }
+
+                    // Registrar no Log para auditoria
+                    registrarLog('Excluiu Gestante e Registros', `Paciente apagada: ${nome}`);
+                    
+                    showNotify("Gestante e todos os seus registros foram deletados.", "success");
+                    navActions['nav-list'](); // Atualiza a lista automaticamente
+                } catch (error) {
+                    console.error("Erro ao deletar:", error);
+                    showNotify("Erro ao deletar a gestante do sistema.", "error");
+                }
+            }
+        };
+
+// REDIRECIONAMENTOS RÁPIDOS DO CARTÒO
+        window.irParaIst = (id) => {
+            document.getElementById('page-title').textContent = "Controle de IST";
+            navActions['nav-ist']();
+            const select = document.getElementById('ist-gestante-select');
+            select.value = id;
+            window.loadIstData(id);
+        };
+
+        window.irParaProcedimento = (id) => {
+            document.getElementById('page-title').textContent = "Procedimentos";
+            navActions['nav-procedimentos']();
+            const select = document.getElementById('procedimento-gestante-select');
+            select.value = id;
+            document.getElementById('procedimento-content').style.display = 'block';
+            window.loadProcHistory(id);
+        };
+
+        window.irParaConsulta = (id) => {
+            document.getElementById('page-title').textContent = "Consultas";
+            navActions['nav-consultas']();
+            const select = document.getElementById('consulta-gestante-select');
+            select.value = id;
+            document.getElementById('consulta-content').style.display = 'block';
+            
+            // Limpa formulário de consultas de edições anteriores por segurança
+            document.getElementById('consulta-form').reset();
+            document.getElementById('edit-cons-id').value = '';
+            document.getElementById('btn-save-cons').textContent = 'Registrar Atendimento';
+            document.getElementById('btn-cancel-cons').style.display = 'none';
+            
+            window.loadConsHistory(id);
+        };
+
+        // FINALIZAÇÃO
+        window.prepararFin = (id) => {
+            if (!requireAuth()) return;
+            document.getElementById('fin-id').value = id;
+            document.getElementById('fin-modal').classList.add('show');
+        };
+        document.getElementById('close-fin-modal').onclick = () => document.getElementById('fin-modal').classList.remove('show');
+
+        document.getElementById('fin-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!requireAuth()) return;
+            const id = document.getElementById('fin-id').value;
+            const motivo = document.getElementById('fin-motivo').value;
+            const dataFin = document.getElementById('fin-data').value;
+            const g = rawGestantes.find(x => x.id === id);
+
+            await updateItem('gestantes', id, {
+                equipeId: g?.area_paciente || currentArea,
+                finalizada: true,
+                motivo_finalizacao: motivo,
+                data_finalizacao: dataFin
+            });
+
+            registrarLog('Finalizou Pré-Natal', `Motivo: ${motivo} | Paciente: ${g.nome}`);
+
+            // GATILHO: DEFESA DA VIDA (Apenas se for Parto)
+            if (motivo === 'Parto') {
+                let criteriosRn = [];
+                
+                // 1. Cálculo de Idade Materna (<16 ou >40)
+                if (g.data_nascimento) {
+                    const idadeMae = Math.floor((new Date(dataFin) - new Date(g.data_nascimento)) / (365.25 * 24 * 60 * 60 * 1000));
+                    if (idadeMae < 16 || idadeMae > 40) criteriosRn.push(`Mãe < 16 ou > 40 anos (${idadeMae}a)`);
+                }
+
+                // 2. Cálculo de Idade Gestacional (Pré/Pós termo)
+                if (g.dum) {
+                    const diffSemanas = Math.floor((new Date(dataFin) - new Date(g.dum)) / (1000 * 60 * 60 * 24 * 7));
+                    if (diffSemanas < 37) criteriosRn.push(`Pré-termo (${diffSemanas} sem)`);
+                    if (diffSemanas > 42) criteriosRn.push(`Pós-termo (${diffSemanas} sem)`);
+                }
+
+                // 3. IST (HIV ou STORCH+Z)
+                const ist = allIst.find(i => i.gestante_id === g.id);
+                if (ist) {
+                    if (ist.hiv_1t_resultado === 'Reagente' || ist.hiv_2t_resultado === 'Reagente' || ist.hiv_3t_resultado === 'Reagente') {
+                        criteriosRn.push("Mãe HIV+");
+                    }
+                    if (ist.sifilis_1t_resultado === 'Reagente' || ist.sifilis_2t_resultado === 'Reagente' || ist.sifilis_3t_resultado === 'Reagente' || ist.hepb_1t_resultado === 'Reagente' || ist.hepc_1t_resultado === 'Reagente') {
+                        criteriosRn.push("Infecções Congênitas (Histórico Materno)");
+                    }
+                }
+
+                // Se bateu algum critério, cadastra o RN automaticamente
+                if (criteriosRn.length > 0) {
+                    await addItem('rn_defesa_vida', {
+                        nome: `RN de ${g.nome}`,
+                        area_paciente: g.area_paciente,
+                        data_nascimento: dataFin,
+                        criterios: criteriosRn.join(" | "),
+                        mae_id: g.id
+                    });
+                    showNotify("Pré-Natal finalizado e RN encaminhado para Defesa da Vida!");
+                } else {
+                    showNotify("Pré-Natal finalizado.");
+                }
+            } else {
+                showNotify("Pré-Natal finalizado.");
+            }
+
+            document.getElementById('fin-modal').classList.remove('show');
+            navActions['nav-list']();
+        };
+
+        // EVENTOS DE INTERFACE
+        document.getElementById('toggle-signup').onclick = () => {
+            setSignupMode(!signupMode);
+        };
+        document.getElementById('awaiting-back').onclick = showLogin;
+        document.getElementById('user-profile-pill').onclick = (event) => {
+            event.stopPropagation();
+            if (!getCurrentUser()) return;
+            document.getElementById('account-menu').classList.toggle('show');
+        };
+        document.getElementById('account-menu').onclick = (event) => event.stopPropagation();
+        document.addEventListener('click', () => {
+            document.getElementById('account-menu').classList.remove('show');
+        });
+        document.getElementById('avatar-grid').onclick = (event) => {
+            const button = event.target.closest('.avatar-choice');
+            if (!button) return;
+            currentUserPrefs.avatar = button.dataset.avatar;
+            document.querySelectorAll('.avatar-choice').forEach(btn => btn.classList.remove('active'));
+            button.classList.add('active');
+            if (window.lucide) lucide.createIcons();
+        };
+        document.getElementById('save-account-profile').onclick = async () => {
+            const user = getCurrentUser();
+            if (!user) return;
+            const displayName = document.getElementById('account-display-name').value.trim();
+            currentUserPrefs.displayName = displayName;
+            saveUserPreferences(user);
+            try {
+                await updateCurrentUserProfile({ displayName });
+            } catch (error) {
+                console.warn('Não foi possível atualizar o perfil no Auth.', error);
+            }
+            renderAccountMenu(user, currentUserProfile);
+            showNotify('Perfil atualizado.');
+        };
+        document.getElementById('change-account-password').onclick = async () => {
+            const newPassword = document.getElementById('account-new-password').value;
+            const confirmPassword = document.getElementById('account-confirm-password').value;
+            if (newPassword.length < 6) {
+                showNotify('A nova senha precisa ter pelo menos 6 caracteres.', 'error');
+                return;
+            }
+            if (newPassword !== confirmPassword) {
+                showNotify('As senhas não conferem.', 'error');
+                return;
+            }
+            try {
+                await updateCurrentUserPassword(newPassword);
+                document.getElementById('account-new-password').value = '';
+                document.getElementById('account-confirm-password').value = '';
+                showNotify('Senha alterada com sucesso.');
+            } catch (error) {
+                const message = error.code === 'auth/requires-recent-login'
+                    ? 'Por segurança, saia e entre novamente antes de trocar a senha.'
+                    : 'Não foi possível alterar a senha.';
+                showNotify(message, 'error');
+            }
+        };
+        document.getElementById('btn-export-backup').onclick = exportFullBackup;
+        document.getElementById('btn-import-backup').onclick = importFullBackup;
+        document.getElementById('btn-import-personal-db').onclick = importPersonalDatabaseToDutra;
+        document.getElementById('access-users-list').onclick = (event) => {
+            const button = event.target.closest('[data-access-action]');
+            if (button) handleAccessAction(button);
+        };
+        document.getElementById('apoiador-unidade-select').onchange = () => {
+            renderApoiadorDashboard();
+        };
+
+        document.getElementById('login-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const errorEl = document.getElementById('login-error');
+            const btn = document.getElementById('login-submit');
+            const unidadeId = document.getElementById('login-unidade').value;
+            const email = document.getElementById('login-email').value.trim().toLowerCase();
+            const password = document.getElementById('login-password').value;
+            const confirmPassword = document.getElementById('signup-confirm-password').value;
+            const roleSolicitada = document.getElementById('signup-role-request').value;
+
+            errorEl.style.display = 'none';
+            errorEl.style.color = '';
+            if (!isInstitutionalEmail(email)) {
+                errorEl.textContent = "Use um e-mail institucional @sorribauru.com.br.";
+                errorEl.style.display = 'block';
+                return;
+            }
+            if (signupMode && password !== confirmPassword) {
+                errorEl.textContent = "As senhas não conferem.";
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = signupMode ?'Criando...' : 'Entrando...';
+            try {
+                resetLocalData();
+                switchUnit(unidadeId);
+                if (signupMode) {
+                    const credential = await createUserCurrentUnit(email, password);
+                    try {
+                    await createProfileRequest(credential.user.uid, {
+                        email: credential.user.email,
+                        unidadeId,
+                        roleSolicitada
+                    });
+                    } catch (profileError) {
+                        console.warn('Cadastro criado no Authentication, mas o perfil não pôde ser gravado.', profileError);
+                    }
+                    await signOutCurrentUnit();
+                    localStorage.setItem('gestantes_unidade_atual', unidadeId);
+                    document.getElementById('login-password').value = '';
+                    document.getElementById('signup-confirm-password').value = '';
+                    setSignupMode(false);
+                    showAwaitingAccess(email, unidadeId);
+                    return;
+                } else {
+                    const credential = await signInCurrentUnit(email, password);
+                    const profile = await getAuthorizationProfile(credential.user.uid);
+                    if (!profile?.ativo) {
+                        await signOutCurrentUnit();
+                        showAwaitingAccess(email, unidadeId, profile);
+                        return;
+                    }
+                    applyUserProfile(credential.user, profile);
+                }
+                localStorage.setItem('gestantes_unidade_atual', unidadeId);
+                document.getElementById('login-password').value = '';
+                document.getElementById('signup-confirm-password').value = '';
+                showApp();
+                initData();
+                openDefaultViewForProfile();
+            } catch (error) {
+                if (error.code === 'auth/email-already-in-use') {
+                    errorEl.textContent = "Este e-mail já tem cadastro. Use a opção Entrar.";
+                } else if (error.code === 'auth/weak-password') {
+                    errorEl.textContent = "A senha precisa ter pelo menos 6 caracteres.";
+                } else {
+                    errorEl.textContent = signupMode
+                        ?"Não foi possível criar o cadastro. Confira os dados."
+                        : "Não foi possível entrar. Verifique e-mail e senha.";
+                }
+                errorEl.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = signupMode ?'Criar cadastro' : 'Entrar';
+            }
+        };
+
+        document.getElementById('logout-btn').onclick = async () => {
+            await signOutCurrentUnit();
+            resetLocalData();
+            showLogin();
+        };
+
+        const closeSidebar = () => {
+            document.getElementById('sidebar').classList.remove('open');
+            document.getElementById('sidebar-backdrop').classList.remove('show');
+        };
+        document.getElementById('menu-btn').onclick = () => {
+            document.getElementById('sidebar').classList.add('open');
+            document.getElementById('sidebar-backdrop').classList.add('show');
+        };
+        document.getElementById('close-sidebar').onclick = closeSidebar;
+        document.getElementById('sidebar-backdrop').onclick = closeSidebar;
+        document.getElementById('global-unidade-select').onchange = (event) => changeOperationalUnit(event.target.value);
+
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.onclick = () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentArea = btn.dataset.area;
+                refreshCurrentView();
+            };
+        });
+
+        document.querySelectorAll('.menu-item[id]:not(#logout-btn)').forEach(item => {
+            item.onclick = (e) => {
+                const id = item.id;
+                if (id === 'tutorial-btn') return;
+                document.getElementById('page-title').textContent = item.textContent.trim();
+                navActions[id]();
+            };
+        });
+
+        const tutorialSteps = [
+            { nav: 'nav-list', title: 'Lista de gestantes', text: 'Acompanhe as gestantes ativas da equipe selecionada, use a busca por nome ou CNS e abra a ficha clicando no cartão.' },
+            { nav: 'nav-register', title: 'Cadastro e edição', text: 'Cadastre novas gestantes ou atualize dados como equipe, CNS, DUM, nascimento, risco e abertura do pré-natal.' },
+            { nav: 'nav-ist', title: 'Controle de IST', text: 'Selecione a gestante e registre os exames por trimestre. Quando houver sífilis reagente, os campos de seguimento aparecem automaticamente.' },
+            { nav: 'nav-procedimentos', title: 'Procedimentos', text: 'Registre pressão arterial e peso. O histórico aparece abaixo assim que uma gestante é selecionada.' },
+            { nav: 'nav-consultas', title: 'Consultas', text: 'Registre atendimentos, agendamentos e faltas. Consultas já lançadas podem ser editadas pelo histórico.' },
+            { nav: 'nav-reports', title: 'Relatórios e busca ativa', text: 'Veja alertas de acompanhamento, como atraso, IST pendente, ausência de consulta e demandas de recém-nascidos.' },
+            { nav: 'nav-indicador-c3', title: 'Indicador C3', text: 'Confira os critérios do indicador: início oportuno, seis consultas, odontologia e exames registrados.' },
+            { nav: 'nav-defesa', title: 'Defesa da Vida', text: 'Acompanhe recém-nascidos, cadastre novos casos e registre os marcos de consulta até seis meses.' },
+            { nav: 'nav-logs', title: 'Histórico', text: 'Consulte as alterações registradas no sistema, com data, ação, equipe e usuário.' }
+        ];
+        const apoiadorTutorialSteps = [
+            { nav: 'nav-apoiador', title: 'Painel do apoiador', text: 'Selecione a unidade para carregar um panorama com gestantes ativas, alto risco, pendências de consulta, IST e Defesa da Vida.' },
+            { nav: 'nav-apoiador', title: 'Leitura por equipe', text: 'Use a tabela por equipe para identificar onde há mais pontos de atenção e orientar a conversa com a unidade.' },
+            { nav: 'nav-apoiador', title: 'Acesso separado', text: 'Este perfil é somente de acompanhamento. Cadastros, edições e exclusões ficam restritos à equipe autorizada da unidade.' }
+        ];
+        let tutorialIndex = 0;
+
+        const renderTutorial = () => {
+            const steps = isGlobalProfile() ? apoiadorTutorialSteps : tutorialSteps;
+            const step = steps[tutorialIndex];
+            if (step.nav && navActions[step.nav]) {
+                const navItem = document.getElementById(step.nav);
+                document.getElementById('page-title').textContent = navItem.textContent.trim();
+                navActions[step.nav]();
+            }
+            document.getElementById('tutorial-title').textContent = step.title;
+            document.getElementById('tutorial-text').textContent = step.text;
+            document.getElementById('tutorial-progress').innerHTML = steps
+                .map((_, i) => `<span class="tutorial-dot ${i === tutorialIndex ? 'active' : ''}"></span>`)
+                .join('');
+            document.getElementById('tutorial-prev').disabled = tutorialIndex === 0;
+            document.getElementById('tutorial-next').textContent = tutorialIndex === steps.length - 1 ? 'Concluir' : 'Próximo';
+            if (window.lucide) lucide.createIcons();
+        };
+
+        document.getElementById('tutorial-btn').onclick = () => {
+            tutorialIndex = 0;
+            document.getElementById('tutorial-modal').classList.add('show');
+            renderTutorial();
+        };
+        document.getElementById('tutorial-close').onclick = () => document.getElementById('tutorial-modal').classList.remove('show');
+        document.getElementById('tutorial-prev').onclick = () => {
+            if (tutorialIndex > 0) {
+                tutorialIndex--;
+                renderTutorial();
+            }
+        };
+        document.getElementById('tutorial-next').onclick = () => {
+            const steps = isGlobalProfile() ? apoiadorTutorialSteps : tutorialSteps;
+            if (tutorialIndex === steps.length - 1) {
+                document.getElementById('tutorial-modal').classList.remove('show');
+                return;
+            }
+            tutorialIndex++;
+            renderTutorial();
+        };
+
+// LOGICA: DEFESA DA VIDA
+        navActions['nav-defesa'] = () => {
+            hideViews();
+            document.getElementById('nav-defesa').classList.add('active');
+            document.getElementById('defesa-container').style.display = 'block';
+            
+            const rns = allRNs.filter(r => r.area_paciente === currentArea);
+            
+            document.getElementById('rn-list-content').innerHTML = rns.map(rn => {
+                // Monta barrinha de progresso das consultas
+                const marcos = ['< 7 dias', '15 dias', '1 mês', '2 meses', '3 meses', '4 meses', '5 meses', '6 meses'];
+                let progressoHtml = marcos.map(m => {
+                    const cons = allRNConsultas.find(c => c.rn_id === rn.id && c.marco === m);
+                    let cor = '#e2e8f0'; // cinza (pendente)
+                    if (cons && cons.status === 'Compareceu') cor = '#22c55e'; // verde
+                    if (cons && cons.status === 'Agendado') cor = '#f59e0b'; // amarelo
+                    if (cons && cons.status === 'Faltou') cor = '#ef4444'; // vermelho
+                    return `<div style="width: 12px; height: 12px; border-radius: 50%; background: ${cor}; display: inline-block; margin-right: 2px;" title="${m}"></div>`;
+                }).join('');
+
+                return `
+                <div class="gestante-card" style="border-left: 5px solid #0ea5e9;">
+                    <div style="flex: 1;">
+                        <h4 style="margin: 0; color: #0ea5e9;">${rn.nome}</h4>
+                        <small style="color: #64748b;">DN: ${new Date(rn.data_nascimento + 'T00:00:00').toLocaleDateString()} | Motivo: <b>${rn.criterios}</b></small>
+                        <div style="margin-top: 5px;">${progressoHtml}</div>
+                    </div>
+                    <button onclick="window.abrirAcompanhamentoRN('${rn.id}')" style="background: #0ea5e9; padding: 8px 15px;">Acompanhar</button>
+                </div>
+                `;
+            }).join('') || '<p>Nenhum RN em acompanhamento nesta equipe.</p>';
+            if (window.lucide) window.lucide.createIcons();
+        };
+
+        window.abrirModalRN = () => {
+            if (!requireAuth()) return;
+            document.getElementById('rn-form').reset();
+            document.getElementById('rn-equipe').value = currentArea;
+            document.getElementById('rn-modal').classList.add('show');
+        };
+
+        document.getElementById('rn-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!requireAuth()) return;
+            const checks = Array.from(document.querySelectorAll('input[name="crit"]:checked')).map(c => c.value);
+            await addItem('rn_defesa_vida', {
+                nome: document.getElementById('rn-nome').value,
+                area_paciente: normalizeArea(document.getElementById('rn-equipe').value),
+                data_nascimento: document.getElementById('rn-dn').value,
+                criterios: checks.join(" | ")
+            });
+            document.getElementById('rn-modal').classList.remove('show');
+            showNotify("RN cadastrado no programa!");
+            navActions['nav-defesa']();
+        };
+
+       window.abrirAcompanhamentoRN = (id) => {
+            const rn = allRNs.find(r => r.id === id);
+            document.getElementById('rn-nome-titulo').textContent = `Acompanhamento: ${rn.nome}`;
+            document.getElementById('rn-consulta-form').style.display = 'none';
+            
+            const roteiro = [
+                { marco: '< 7 dias', prof: 'Enfermeiro ou Médico' },
+                { marco: '15 dias', prof: 'Médico' },
+                { marco: '1 mês', prof: 'Médico ou Enfermeiro' },
+                { marco: '2 meses', prof: 'Médico' },
+                { marco: '3 meses', prof: 'Enf + Assist. Social' },
+                { marco: '4 meses', prof: 'Médico + Nutricionista' },
+                { marco: '5 meses', prof: 'Enfermeiro' },
+                { marco: '6 meses', prof: 'Médico (Alta)' }
+            ];
+
+            document.getElementById('rn-timeline').innerHTML = roteiro.map(r => {
+                const cons = allRNConsultas.find(c => c.rn_id === id && c.marco === r.marco);
+                let btnTxt = cons ?(cons.status === 'Compareceu' ?'Ver/Editar' : (cons.status === 'Faltou' ?'Faltou' : '⏳ Agendado')) : 'Registrar';
+                let btnColor = cons ?(cons.status === 'Compareceu' ?'#22c55e' : (cons.status === 'Faltou' ?'#ef4444' : '#f59e0b')) : '#64748b';
+                
+                // EXIBIÇÃO RÁPIDA ATUALIZADA: Mostra a data, peso, estatura e aleitamento na linha do tempo
+                let infoExtra = '';
+                if (cons) {
+                    const dataFormatada = new Date(cons.data_consulta + 'T00:00:00').toLocaleDateString('pt-BR');
+                    if (cons.status === 'Compareceu') {
+                        infoExtra = `<br><small style="color: #16a34a; font-size: 11px; display: inline-block; margin-top: 3px;">
+                            <b>Data:</b> ${dataFormatada} | <b>Peso:</b> ${cons.peso}g | <b>Est:</b> ${cons.estatura}cm |  <b>Aleitamento:</b> ${cons.aleitamento || '--'}
+                        </small>`;
+                    } else if (cons.status === 'Agendado') {
+                        infoExtra = `<br><small style="color: #d97706; font-size: 11px;">Data: <b>Agendado para:</b> ${dataFormatada}</small>`;
+                    } else if (cons.status === 'Faltou') {
+                        infoExtra = `<br><small style="color: #dc2626; font-size: 11px;">Faltou <b>Faltou em:</b> ${dataFormatada}</small>`;
+                    }
+                }
+
+                return `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #e2e8f0;">
+                    <div>
+                        <strong>${r.marco}</strong> <small style="color: #64748b;">(${r.prof})</small>
+                        ${infoExtra}
+                    </div>
+                    <button onclick="window.prepararConsultaRN('${id}', '${r.marco}')" style="background: ${btnColor}; padding: 5px 10px; font-size: 0.8rem;">${btnTxt}</button>
+                </div>
+                `;
+            }).join('');
+
+            document.getElementById('rn-consulta-modal').classList.add('show');
+        };
+
+       window.prepararConsultaRN = (rn_id, marco) => {
+            if (!requireAuth()) return;
+            document.getElementById('rn-id-atual').value = rn_id;
+            document.getElementById('rn-marco-atual').value = marco;
+            document.getElementById('rn-form-titulo').textContent = `Registro: ${marco}`;
+            
+            const cons = allRNConsultas.find(c => c.rn_id === rn_id && c.marco === marco);
+            if (cons) {
+                document.getElementById('rn-cons-status').value = cons.status;
+                document.getElementById('rn-cons-data').value = cons.data_consulta;
+                document.getElementById('rn-cons-peso').value = cons.peso || '';
+                document.getElementById('rn-cons-estatura').value = cons.estatura || '';
+                document.getElementById('rn-cons-aleitamento').value = cons.aleitamento || ''; // Carrega o Aleitamento salvo
+            } else {
+                document.getElementById('rn-consulta-form').reset();
+            }
+            document.getElementById('rn-consulta-form').style.display = 'block';
+        };
+
+        document.getElementById('rn-consulta-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!requireAuth()) return;
+            const rn_id = document.getElementById('rn-id-atual').value;
+            const marco = document.getElementById('rn-marco-atual').value;
+            const data = {
+                rn_id: rn_id,
+                equipeId: allRNs.find(rn => rn.id === rn_id)?.area_paciente || currentArea,
+                marco: marco,
+                status: document.getElementById('rn-cons-status').value,
+                data_consulta: document.getElementById('rn-cons-data').value,
+                peso: document.getElementById('rn-cons-peso').value,
+                estatura: document.getElementById('rn-cons-estatura').value,
+                aleitamento: document.getElementById('rn-cons-aleitamento').value // Grava o Aleitamento escolhido
+            };
+
+            const existente = allRNConsultas.find(c => c.rn_id === rn_id && c.marco === marco);
+            if (existente) {
+                await updateItem('rn_consultas', existente.id, data);
+            } else {
+                await addItem('rn_consultas', data);
+            }
+            
+            showNotify("Registro de RN atualizado!");
+            document.getElementById('rn-consulta-form').style.display = 'none';
+            window.abrirAcompanhamentoRN(rn_id); // Recarrega os dados atualizados na tela
+            navActions['nav-defesa']();
+        };
+        window.onload = () => {
+            populateUnitSelector();
+            document.getElementById('personal-db-url').value = localStorage.getItem('gestantes_personal_db_url') || '';
+            const unidadeSalva = localStorage.getItem('gestantes_unidade_atual');
+            if (unidadeSalva && firebaseConfigsPorUnidade[unidadeSalva]?.enabled) {
+                document.getElementById('login-unidade').value = unidadeSalva;
+                switchUnit(unidadeSalva);
+            }
+            renderTeamControls();
+            showLogin();
+            onAuthStateChangedCurrentUnit(async (user) => {
+                if (user) {
+                    const profile = await getAuthorizationProfile(user.uid);
+                    if (profile?.ativo) {
+                        applyUserProfile(user, profile);
+                        showApp();
+                        initData();
+                        openDefaultViewForProfile();
+                    } else {
+                        await signOutCurrentUnit();
+                        resetLocalData();
+                        if (!awaitingAccessMode) showLogin();
+                    }
+                } else {
+                    resetLocalData();
+                    if (!awaitingAccessMode) showLogin();
+                }
+                if (window.lucide) lucide.createIcons();
+            });
+        };
+
+    </script>
+</body>
+
+</html>
+
