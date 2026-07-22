@@ -106,6 +106,22 @@
                 unidadeId: 'godoy',
                 legacyCompatibility: true,
                 equipesPermitidas: ['021', '200', '201']
+            },
+            'apoiadoresf1@sorribauru.com.br': {
+                ativo: true, status: 'ativo', role: 'apoiadora', perfil: 'apoiadora',
+                nome: 'Gabriela Benjamin Togashi', unidadeId: 'dutra', equipesPermitidas: []
+            },
+            'apoiadoresf2@sorribauru.com.br': {
+                ativo: true, status: 'ativo', role: 'apoiadora', perfil: 'apoiadora',
+                nome: 'Jéssica Apoiadora ESF', unidadeId: 'dutra', equipesPermitidas: []
+            },
+            'apoiadoresf3@sorribauru.com.br': {
+                ativo: true, status: 'ativo', role: 'apoiadora', perfil: 'apoiadora',
+                nome: 'Karyn Apoiadora ESF', unidadeId: 'dutra', equipesPermitidas: []
+            },
+            'coordeducacao@sorribauru.com.br': {
+                ativo: true, status: 'ativo', role: 'educacao_permanente', perfil: 'educação permanente',
+                nome: 'Coordenação Educação Permanente', unidadeId: 'dutra', equipesPermitidas: []
             }
         };
 
@@ -2951,7 +2967,10 @@
                         roleSolicitada
                     });
                     } catch (profileError) {
-                        console.warn('Cadastro criado no Authentication, mas o perfil não pôde ser gravado.', profileError);
+                        await signOutCurrentUnit();
+                        const requestError = new Error('A conta foi criada, mas as regras do Firestore bloquearam a solicitação. Publique as regras atualizadas e depois use Entrar com a mesma senha.');
+                        requestError.code = 'profile/permission-denied';
+                        throw requestError;
                     }
                     await signOutCurrentUnit();
                     localStorage.setItem('gestantes_unidade_atual', unidadeId);
@@ -2962,7 +2981,15 @@
                     return;
                 } else {
                     const credential = await signInCurrentUnit(email, password);
-                    const profile = await getAuthorizationProfile(credential.user.uid);
+                    let profile = await getAuthorizationProfile(credential.user.uid);
+                    if (!profile) {
+                        await createProfileRequest(credential.user.uid, {
+                            email: credential.user.email,
+                            unidadeId,
+                            roleSolicitada: 'unidade'
+                        });
+                        profile = { ativo: false, status: 'aguardando_liberacao', unidadeId };
+                    }
                     if (!profile?.ativo) {
                         await signOutCurrentUnit();
                         showAwaitingAccess(email, unidadeId, profile);
@@ -2981,6 +3008,8 @@
                     errorEl.textContent = "Este e-mail já tem cadastro. Use a opção Entrar.";
                 } else if (error.code === 'auth/weak-password') {
                     errorEl.textContent = "A senha precisa ter pelo menos 6 caracteres.";
+                } else if (error.code === 'profile/permission-denied' || error.code === 'permission-denied') {
+                    errorEl.textContent = error.message || "As regras do Firestore bloquearam a solicitação de acesso.";
                 } else {
                     errorEl.textContent = signupMode
                         ?"Não foi possível criar o cadastro. Confira os dados."
