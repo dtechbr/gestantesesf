@@ -191,14 +191,39 @@
         const updateItem = (name, id, data) => { assertWriteAccess(data); return updateDoc(dbItemRef(name, id), withTimestamps(secureData(data))); };
         const setItem = (name, id, data) => { assertWriteAccess(data); return setDoc(dbItemRef(name, id), withTimestamps(secureData(data), true), { merge: true }); };
         const deleteItem = (name, id) => deleteDoc(dbItemRef(name, id));
-        const listenList = (name, callback) => onSnapshot(dbListRef(name), (snapshot) => {
+        const listenList = (name, callback) => {
             const global = accessProfile && ['apoiadora', 'educacao_permanente'].includes(accessProfile.role);
             const permitted = (accessProfile?.equipesPermitidas || []).map(String);
-            const lista = snapshot.docs
-                .map((documento) => ({ id: documento.id, ...(documento.data() || {}) }))
-                .filter((item) => global || !permitted.length || !item.equipeId || permitted.includes(String(item.equipeId)));
-            callback(lista);
-        });
+            const restricted = !global && accessProfile?.equipesRestritas && permitted.length;
+            const refs = [dbListRef(name)];
+
+            // Gestantes e RNs antigos usam area_paciente em vez de equipeId.
+            // Para funcionarios restritos, consulta os dois formatos e mescla
+            // por ID, sempre dentro das equipes permitidas.
+            if (restricted && ['gestantes', 'rn_defesa_vida'].includes(name)) {
+                refs.push(query(dbCollectionRef(name), where('area_paciente', 'in', permitted.slice(0, 30))));
+            }
+
+            const snapshotsByRef = new Map();
+            const publishMerged = () => {
+                const merged = new Map();
+                snapshotsByRef.forEach(items => items.forEach(item => merged.set(item.id, item)));
+                const lista = [...merged.values()].filter((item) => {
+                    if (global || !permitted.length) return true;
+                    const team = String(item.equipeId || item.area_paciente || '');
+                    return permitted.includes(team);
+                });
+                callback(lista);
+            };
+
+            const unsubscribes = refs.map((ref, index) => onSnapshot(ref, (snapshot) => {
+                snapshotsByRef.set(index, snapshot.docs.map(documento => ({ id: documento.id, ...(documento.data() || {}) })));
+                publishMerged();
+            }, (error) => {
+                console.error(`Não foi possível carregar ${name}.`, error);
+            }));
+            return () => unsubscribes.forEach(unsubscribe => unsubscribe());
+        };
 
         const getCurrentUser = () => auth.currentUser;
         const signInCurrentUnit = (email, password) => signInWithEmailAndPassword(auth, email, password);
