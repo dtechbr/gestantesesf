@@ -12,7 +12,7 @@
     <!-- Firebase SDK (Modular) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, updateProfile } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, updateProfile } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
         import {
             getFirestore, collection, query, where, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, getDocs
         } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
@@ -28,15 +28,6 @@
             appId: "1:657527544765:web:1eec96a29e938691f090d4",
             measurementId: "G-3RCMLBQYXH"
         };
-        const legacyFirebaseConfig = {
-            apiKey: "AIzaSyB_0y0KHllFB32tv2OyeUw8EQSFYxMMudw",
-            authDomain: "chamado-68ac3.firebaseapp.com",
-            projectId: "chamado-68ac3",
-            storageBucket: "chamado-68ac3.firebasestorage.app",
-            messagingSenderId: "1001100519035",
-            appId: "1:1001100519035:web:bcc34bf3025326d6f224de"
-        };
-
         const firebaseConfigsPorUnidade = {
             godoy: {
                 label: "USF Jardim Godoy",
@@ -137,8 +128,6 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        let legacyDb = null;
-        let legacyAuth = null;
         let BASE_PATH = "";
         let accessProfile = null;
 
@@ -333,22 +322,12 @@
             ]);
             if (results.every(result => result.status === 'rejected')) throw results[0].reason;
         };
-        const readLegacyCollection = async (name) => {
-            if (!legacyDb) {
-                const legacyApp = initializeApp(legacyFirebaseConfig, 'gestantes-offline-antigo');
-                legacyAuth = getAuth(legacyApp);
-                legacyDb = getFirestore(legacyApp);
-            }
-            if (!legacyAuth.currentUser) await signInAnonymously(legacyAuth);
-            const snapshot = await getDocs(collection(legacyDb, 'artifacts', 'controle-gestantes-vila-dutra', 'public', 'data', name));
-            return snapshot.docs.map(item => ({ id: item.id, ...(item.data() || {}) }));
-        };
 
         window.fb = {
             get app() { return app; },
             get db() { return db; },
             get auth() { return auth; },
-            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, readLegacyCollection, getCurrentUser,
+            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, getCurrentUser,
             signInCurrentUnit, createUserCurrentUnit, onAuthStateChangedCurrentUnit, signOutCurrentUnit, updateCurrentUserPassword, updateCurrentUserProfile, isUserAuthorized, getAuthorizationProfile,
             collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, getDocs,
             get unidadeAtual() { return unidadeAtual; },
@@ -692,7 +671,30 @@
         }
 
         .high-risk {
-            border-left: 6px solid var(--error-color);
+            border: 2px solid #dc2626;
+            border-left: 9px solid #dc2626;
+            background: linear-gradient(90deg, #fff1f2 0%, #ffffff 55%);
+            box-shadow: 0 3px 12px rgba(220, 38, 38, 0.16);
+        }
+
+        .high-risk-search {
+            background: #fff1f2 !important;
+            border-color: #dc2626 !important;
+            box-shadow: 0 3px 12px rgba(220, 38, 38, 0.14);
+        }
+
+        .risk-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: #dc2626;
+            color: white;
+            padding: 4px 9px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: .02em;
+            text-transform: uppercase;
         }
 
         .normal-risk {
@@ -1418,8 +1420,6 @@
                     <input type="url" id="personal-db-url" placeholder="https://seu-banco.firebaseio.com/.json ou arquivo .json">
                 </div>
                 <button type="button" id="btn-import-personal-db" style="background:#0f766e;">Importar banco pessoal para Dutra</button>
-                <button type="button" id="btn-import-legacy-firestore" style="background:#7c3aed; margin-left:8px; display:none;">Importar banco offline antigo para esta unidade</button>
-                <small id="legacy-import-note" style="display:none;color:#6d28d9;margin-top:8px;">Modo seguro: registros existentes nunca são sobrescritos e duplicidades são ignoradas.</small>
                 <div id="backup-status" style="margin-top:15px; color:#64748b; font-weight:600;"></div>
             </div>
 
@@ -1488,7 +1488,7 @@
 
     <script type="module">
         const {
-            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, readLegacyCollection, getCurrentUser, signInCurrentUnit, createUserCurrentUnit,
+            firebaseConfigsPorUnidade, switchUnit, setAccessProfile, createProfileRequest, getUnitAccessProfiles, updateAccessProfile, getCurrentUser, signInCurrentUnit, createUserCurrentUnit,
             onAuthStateChangedCurrentUnit, signOutCurrentUnit, updateCurrentUserPassword, updateCurrentUserProfile, isUserAuthorized, getAuthorizationProfile,
             addItem, updateItem, setItem, deleteItem, listenList, dbListRef, collection, getDoc, getDocs
         } = window.fb;
@@ -1590,6 +1590,11 @@
         }[char]));
 
         const escapeJsArg = (value) => String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
+
+        const isHighRisk = (gestante) => String(gestante?.risco_gestacional || '').trim().toUpperCase() === 'ALTO RISCO';
+        const highRiskBadge = (gestante) => isHighRisk(gestante)
+            ? '<span class="risk-badge"><i data-lucide="triangle-alert" style="width:13px;height:13px;"></i> Alto risco</span>'
+            : '';
 
         const requireAuth = () => {
             if (!getCurrentUser()) {
@@ -1773,13 +1778,6 @@
             document.getElementById('nav-apoiador').style.display =
                 (isGlobalProfile() || isCoordinatorProfile()) ? 'flex' : 'none';
             document.getElementById('nav-acessos').style.display = isAccessManager() ? 'flex' : 'none';
-            const legacyImportButton = document.getElementById('btn-import-legacy-firestore');
-            if (legacyImportButton) {
-                const canImportLegacy = String(getCurrentUser()?.email || '').toLowerCase() === 'coordviladutra@sorribauru.com.br';
-                legacyImportButton.style.display = canImportLegacy ? 'inline-block' : 'none';
-                const legacyNote = document.getElementById('legacy-import-note');
-                if (legacyNote) legacyNote.style.display = canImportLegacy ? 'block' : 'none';
-            }
         };
 
         const renderGlobalUnitSwitcher = () => {
@@ -2021,7 +2019,7 @@
                         const idArg = escapeJsArg(g.id);
                         const nomeSeguro = escapeHtml(g.nome || '');
                         const cnsSeguro = escapeHtml(g.cns || '--');
-                        let badges = '';
+                        let badges = highRiskBadge(g);
 
                         if (sem >= 37) badges += `<span style="background:#fce7f3; color:#be185d; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;">Atenção Reta Final (${sem} sem)</span>`;
                         else if (sem >= 28) badges += `<span style="background:#e0e7ff; color:#4338ca; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;"> 3º Trimestre</span>`;
@@ -2125,6 +2123,7 @@
 
                 const list = rawGestantes.filter(g => !g.finalizada && g.area_paciente === currentArea);
                 const semConsulta = [], emAtraso = [], istAlterado = [], semIst = [];
+                const altoRiscoBusca = list.filter(isHighRisk);
                 const avaliarConsultas = [];
                 
                 const avaliarRNConsultas = [];
@@ -2205,6 +2204,9 @@
                 // --- RENDERIZAÇÃO ---
                 document.getElementById('report-content').innerHTML = `
                     <div style="display: grid; gap: 20px;">
+                        <fieldset style="border:2px solid #dc2626; background:#fff1f2;"><legend style="color:#b91c1c;font-weight:800;"><i data-lucide="triangle-alert"></i> Gestantes de Alto Risco (${altoRiscoBusca.length})</legend>
+                            ${altoRiscoBusca.map(g => `<div class="gestante-card high-risk-search" style="border-left:9px solid #dc2626;"><div style="flex:1;"><h4 style="margin:0 0 6px;color:#b91c1c;">${escapeHtml(g.nome)}</h4>${highRiskBadge(g)}<div style="margin-top:6px;"><small>Equipe ${escapeHtml(g.area_paciente)} | CNS: ${escapeHtml(g.cns || '--')}</small></div></div><button onclick="window.editG('${escapeJsArg(g.id)}')" style="background:#dc2626;padding:8px 15px;">Ver ficha prioritária</button></div>`).join('') || '<p>Nenhuma gestante de alto risco nesta equipe.</p>'}
+                        </fieldset>
                         
                         <fieldset style="border-color: #ec4899; background: white;"><legend style="color: #ec4899;"><i data-lucide="baby"></i> ⏳ Avaliar Status de Consulta - RN (${avaliarRNConsultas.length})</legend>
                             ${avaliarRNConsultas.map(item => `
@@ -2240,7 +2242,7 @@
                             ${avaliarConsultas.map(item => `
                                 <div class="gestante-card" style="border-left: 5px solid #ea580c;">
                                     <div style="flex:1;">
-                                        <h4>${item.gestante.nome}</h4>
+                                        <h4>${item.gestante.nome}</h4>${highRiskBadge(item.gestante)}
                                         <small style="color:#c2410c; font-weight: bold;">Consultas agendadas que já passaram/ocorreram:</small>
                                         <div style="margin-top: 4px; font-size: 12px; color: #475569;">
                                             ${item.consultas.map(c => `⬢ <b>${new Date(c.data_consulta + 'T00:00:00').toLocaleDateString('pt-BR')}</b> - Atendimento: ${c.tipo_consulta}`).join('<br>')}
@@ -2252,16 +2254,16 @@
                         </fieldset>
 
                         <fieldset style="border-color: #8b5cf6; background: white;"><legend style="color: #8b5cf6;"><i data-lucide="activity"></i>  IST Reagente (${istAlterado.length})</legend>
-                            ${istAlterado.map(item => `<div class="gestante-card" style="border-left: 5px solid #8b5cf6;"><div style="flex:1;"><h4>${item.gestante.nome}</h4><small style="color:#ef4444; font-weight: bold;">Detectado: ${item.exames}</small></div><button onclick="window.editG('${item.gestante.id}')" style="background:#8b5cf6; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Nenhum exame IST reagente nesta equipe.</p>'}
+                            ${istAlterado.map(item => `<div class="gestante-card ${isHighRisk(item.gestante) ? 'high-risk-search' : ''}" style="border-left: 5px solid #8b5cf6;"><div style="flex:1;"><h4>${item.gestante.nome}</h4>${highRiskBadge(item.gestante)}<br><small style="color:#ef4444; font-weight: bold;">Detectado: ${item.exames}</small></div><button onclick="window.editG('${item.gestante.id}')" style="background:#8b5cf6; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Nenhum exame IST reagente nesta equipe.</p>'}
                         </fieldset>
                         <fieldset style="border-color: #ef4444; background: white;"><legend style="color: #ef4444;"><i data-lucide="alert-triangle"></i> Atenção Atraso > 35 dias (${emAtraso.length})</legend>
-                            ${emAtraso.map(item => `<div class="gestante-card" style="border-left: 5px solid #ef4444;"><div style="flex:1;"><h4>${item.gestante.nome}</h4><small>Ultima consulta: ${new Date(item.ultimaData + 'T00:00:00').toLocaleDateString('pt-BR')} <b>(${item.dias} dias atrás)</b></small></div><button onclick="window.editG('${item.gestante.id}')" style="background:#ef4444; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Nenhuma gestante em atraso neste momento.</p>'}
+                            ${emAtraso.map(item => `<div class="gestante-card ${isHighRisk(item.gestante) ? 'high-risk-search' : ''}" style="border-left: 5px solid #ef4444;"><div style="flex:1;"><h4>${item.gestante.nome}</h4>${highRiskBadge(item.gestante)}<br><small>Ultima consulta: ${new Date(item.ultimaData + 'T00:00:00').toLocaleDateString('pt-BR')} <b>(${item.dias} dias atrás)</b></small></div><button onclick="window.editG('${item.gestante.id}')" style="background:#ef4444; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Nenhuma gestante em atraso neste momento.</p>'}
                         </fieldset>
                         <fieldset style="border-color: #64748b; background: white;"><legend style="color: #64748b;"><i data-lucide="file-question"></i> Pendência Pendência de Exames IST (${semIst.length})</legend>
-                            ${semIst.map(g => `<div class="gestante-card" style="border-left: 5px solid #64748b;"><div style="flex:1;"><h4>${g.nome}</h4><small>Sem resultados de Sífilis/HIV registrados no painel.</small></div><button onclick="window.editG('${g.id}')" style="background:#64748b; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Todas as gestantes possuem registro base de IST.</p>'}
+                            ${semIst.map(g => `<div class="gestante-card ${isHighRisk(g) ? 'high-risk-search' : ''}" style="border-left: 5px solid #64748b;"><div style="flex:1;"><h4>${g.nome}</h4>${highRiskBadge(g)}<br><small>Sem resultados de Sífilis/HIV registrados no painel.</small></div><button onclick="window.editG('${g.id}')" style="background:#64748b; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Todas as gestantes possuem registro base de IST.</p>'}
                         </fieldset>
                         <fieldset style="border-color: #f59e0b; background: white;"><legend style="color: #f59e0b;"><i data-lucide="alert-circle"></i> Atenção Sem Nenhuma Consulta (${semConsulta.length})</legend>
-                            ${semConsulta.map(g => `<div class="gestante-card" style="border-left: 5px solid #f59e0b;"><div style="flex:1;"><h4>${g.nome}</h4><small>Nenhum atendimento lançado no painel.</small></div><button onclick="window.editG('${g.id}')" style="background:#f59e0b; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Todas as gestantes possuem ao menos uma consulta registrada.</p>'}
+                            ${semConsulta.map(g => `<div class="gestante-card ${isHighRisk(g) ? 'high-risk-search' : ''}" style="border-left: 5px solid #f59e0b;"><div style="flex:1;"><h4>${g.nome}</h4>${highRiskBadge(g)}<br><small>Nenhum atendimento lançado no painel.</small></div><button onclick="window.editG('${g.id}')" style="background:#f59e0b; padding: 8px 15px;">Ver Ficha</button></div>`).join('') || '<p>Todas as gestantes possuem ao menos uma consulta registrada.</p>'}
                         </fieldset>
                     </div>
                 `;
@@ -2525,58 +2527,6 @@
                 if (!dataInitialized) initData();
             } catch (error) {
                 status.textContent = `Erro na migração: ${error.message}`;
-            }
-        };
-
-        const importLegacyFirestore = async () => {
-            if (!requireAuth()) return;
-            if (String(getCurrentUser()?.email || '').toLowerCase() !== 'coordviladutra@sorribauru.com.br') {
-                return showNotify('Este importador é exclusivo da coordenação Vila Dutra.', 'error');
-            }
-            const status = document.getElementById('backup-status');
-            const targetUnit = window.fb.unidadeAtual;
-            try {
-                status.textContent = 'Lendo o banco offline antigo...';
-                const entries = await Promise.all(DATA_LISTS.map(async name => [name, await readLegacyCollection(name)]));
-                const legacy = Object.fromEntries(entries);
-                const gestanteTeams = new Map((legacy.gestantes || []).map(item => [item.id, normalizeArea(item.area_paciente)]));
-                const rnTeams = new Map((legacy.rn_defesa_vida || []).map(item => [item.id, normalizeArea(item.area_paciente)]));
-                const destinationByList = {};
-                for (const name of DATA_LISTS) destinationByList[name] = Object.entries(await snapshotList(name)).map(([id, data]) => ({ id, ...data }));
-                const isDuplicate = (name, id, data) => {
-                    const destination = destinationByList[name] || [];
-                    if (destination.some(item => item.id === id || (item.legacy_source === 'chamado-68ac3' && item.legacy_source_id === id))) return true;
-                    if (name === 'gestantes') {
-                        const cns = String(data.cns || '').replace(/\D/g, '');
-                        return destination.some(item => (cns && String(item.cns || '').replace(/\D/g, '') === cns)
-                            || (String(item.nome || '').trim().toLowerCase() === String(data.nome || '').trim().toLowerCase()
-                                && item.data_nascimento && item.data_nascimento === data.data_nascimento));
-                    }
-                    if (name === 'investigacoes_obito') {
-                        return destination.some(item => item.gestante_id === data.gestante_id
-                            && item.tipo_evento === data.tipo_evento
-                            && item.data_evento === data.data_evento);
-                    }
-                    return false;
-                };
-                let imported = 0, skipped = 0;
-                for (const name of DATA_LISTS) {
-                    for (const item of legacy[name] || []) {
-                        const { id, ...data } = item;
-                        if (isDuplicate(name, id, data)) { skipped++; continue; }
-                        const team = normalizeArea(data.equipeId || data.area_paciente || data.equipe
-                            || gestanteTeams.get(data.gestante_id)
-                            || rnTeams.get(data.rn_id));
-                        const importedData = { ...data, ...(team ? { equipeId: team } : {}), unidadeId: targetUnit, legacy_source: 'chamado-68ac3', legacy_source_id: id };
-                        await setItem(name, id, importedData);
-                        destinationByList[name].push({ id, ...importedData });
-                        imported++;
-                    }
-                }
-                status.textContent = `Migração concluída para ${firebaseConfigsPorUnidade[targetUnit]?.label}: ${imported} importados e ${skipped} preservados.`;
-                registrarLog('Importou Banco Offline Antigo', `Importados: ${imported} | Preservados: ${skipped}`, { colecao: 'backup' });
-            } catch (error) {
-                status.textContent = `Erro ao importar o banco antigo: ${error.message}`;
             }
         };
 
@@ -3163,7 +3113,6 @@
         document.getElementById('btn-export-backup').onclick = exportFullBackup;
         document.getElementById('btn-import-backup').onclick = importFullBackup;
         document.getElementById('btn-import-personal-db').onclick = importPersonalDatabaseToDutra;
-        document.getElementById('btn-import-legacy-firestore').onclick = importLegacyFirestore;
         document.getElementById('access-users-list').onclick = (event) => {
             const button = event.target.closest('[data-access-action]');
             if (button) handleAccessAction(button);
