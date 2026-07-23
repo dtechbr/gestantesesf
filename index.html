@@ -363,15 +363,16 @@
             position: fixed;
             top: 0;
             left: -260px;
-            width: 260px;
+            width: 280px;
             height: 100%;
-            background: white;
-            box-shadow: var(--shadow);
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            box-shadow: 8px 0 24px rgba(15, 23, 42, 0.1);
             transition: 0.3s;
             z-index: 1000;
-            padding-top: 20px;
             box-sizing: border-box;
-            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
         #sidebar-backdrop {
@@ -388,32 +389,124 @@
             left: 0;
         }
 
+        .sidebar-brand {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-height: 72px;
+            padding: 14px 48px 14px 18px;
+            border-bottom: 1px solid var(--border-color);
+            background: #fff;
+        }
+
+        .sidebar-brand-icon {
+            display: grid;
+            place-items: center;
+            width: 38px;
+            height: 38px;
+            flex: 0 0 38px;
+            border-radius: 11px;
+            color: #fff;
+            background: linear-gradient(135deg, var(--primary-color), #0284c7);
+        }
+
+        .sidebar-brand-icon svg { width: 21px; height: 21px; }
+
         #sidebar h3 {
-            padding: 0 20px;
-            color: var(--primary-color);
-            font-size: 1.2rem;
+            margin: 0;
+            color: #0f172a;
+            font-size: 1rem;
+            line-height: 1.25;
+        }
+
+        .sidebar-brand small {
+            display: block;
+            margin-top: 3px;
+            color: #64748b;
+            font-size: .72rem;
+        }
+
+        .sidebar-menu {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px 10px 16px;
+            scrollbar-width: thin;
+        }
+
+        .menu-section { margin: 7px 0 12px; }
+
+        .menu-section-title {
+            margin: 0;
+            padding: 6px 10px;
+            color: #94a3b8;
+            font-size: .68rem;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
         }
 
         .menu-item {
             display: flex;
             align-items: center;
-            padding: 12px 20px;
-            color: #64748b;
+            gap: 11px;
+            min-height: 42px;
+            margin: 2px 0;
+            padding: 9px 11px;
+            box-sizing: border-box;
+            color: #475569;
             text-decoration: none;
-            border-left: 4px solid transparent;
+            border: 1px solid transparent;
+            border-radius: 9px;
             cursor: pointer;
+            font-size: .9rem;
+            font-weight: 550;
+            transition: background .18s, color .18s, transform .18s;
         }
 
-        .menu-item:hover,
-        .menu-item.active {
+        .menu-item:hover {
             background: #f0f9ff;
             color: var(--primary-color);
-            border-left-color: var(--primary-color);
+            transform: translateX(2px);
+        }
+
+        .menu-item.active {
+            background: linear-gradient(90deg, #e0f2fe, #f0f9ff);
+            color: #0369a1;
+            border-color: #bae6fd;
+            box-shadow: 0 2px 5px rgba(14, 165, 233, .1);
         }
 
         .menu-item i {
-            margin-right: 10px;
-            width: 18px;
+            width: 20px;
+            height: 20px;
+            flex: 0 0 20px;
+            stroke-width: 2;
+        }
+
+        .sidebar-footer {
+            padding: 9px 10px 12px;
+            border-top: 1px solid var(--border-color);
+            background: #fff;
+        }
+
+        #logout-btn { color: #b91c1c; }
+        #logout-btn:hover { color: #991b1b; background: #fef2f2; }
+
+        #close-sidebar {
+            position: absolute;
+            right: 12px;
+            top: 18px;
+            display: grid;
+            place-items: center;
+            width: 34px;
+            height: 34px;
+            padding: 0;
+            border: 0;
+            border-radius: 9px;
+            background: transparent;
+            color: #64748b;
+            cursor: pointer;
         }
 
         #main-content {
@@ -429,7 +522,7 @@
             }
 
             #main-content {
-                margin-left: 260px;
+                margin-left: 280px;
             }
 
             #menu-btn {
@@ -695,6 +788,77 @@
             font-weight: 800;
             letter-spacing: .02em;
             text-transform: uppercase;
+        }
+
+        .gar-card-button {
+            background: #fff1f2;
+            color: #b91c1c;
+            border: 1px solid #fda4af;
+            font-size: 9px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 800;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            transition: .2s;
+        }
+
+        .gar-card-button:hover {
+            background: #dc2626;
+            border-color: #dc2626;
+            color: #fff;
+        }
+
+        .gar-status-summary {
+            margin: 4px 0 0;
+            padding: 8px 10px;
+            border: 1px solid #fecdd3;
+            border-radius: 8px;
+            background: rgba(255, 241, 242, .75);
+            color: #9f1239;
+            font-size: .76rem;
+        }
+
+        .gar-modal-header {
+            margin: -30px -30px 22px;
+            padding: 22px 30px;
+            border-radius: 15px 15px 0 0;
+            background: linear-gradient(135deg, #991b1b, #dc2626);
+            color: #fff;
+        }
+
+        .gar-modal-header h3 { margin: 0 0 4px; }
+        .gar-modal-header p { margin: 0; opacity: .86; font-size: .85rem; }
+
+        .gar-check {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 11px 12px;
+            border: 1px solid #e2e8f0;
+            border-radius: 9px;
+            background: #f8fafc;
+            cursor: pointer;
+        }
+
+        .gar-check input {
+            width: 18px;
+            height: 18px;
+            margin: 1px 0 0;
+            accent-color: #dc2626;
+        }
+
+        .gar-form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        @media (max-width: 560px) {
+            .gar-form-grid { grid-template-columns: 1fr; }
+            .gar-modal-header { margin: -20px -20px 18px; padding: 18px 20px; }
         }
 
         .normal-risk {
@@ -993,26 +1157,44 @@
     </section>
     <div class="container" id="app-container" style="display: none;">
         <div id="sidebar-backdrop" aria-hidden="true"></div>
-        <nav id="sidebar">
-            <button id="close-sidebar"
-                style="position: absolute; right: 15px; top: 15px; background: none; color: #94a3b8; font-size: 24px; border: none; cursor: pointer;">&times;</button>
-            <h3>Vila Dutra APS</h3>
-            <div class="menu-item" id="nav-list"><i data-lucide="list"></i> Listar Gestantes</div>
-            <div class="menu-item" id="nav-register"><i data-lucide="user-plus"></i> Cadastrar Novo</div>
-            <div class="menu-item" id="nav-reports"><i data-lucide="bar-chart-3"></i> Relatórios / Busca</div>
-            <div class="menu-item" id="nav-ist"><i data-lucide="shield-check"></i> Controle de IST</div>
-            <div class="menu-item" id="nav-procedimentos"><i data-lucide="activity"></i> Procedimentos</div>
-            <div class="menu-item" id="nav-consultas"><i data-lucide="calendar"></i> Consultas</div>
-            <div class="menu-item" id="nav-indicador-c3"><i data-lucide="trending-up"></i> Indicador C3</div>
-            <div class="menu-item" id="nav-finalizadas"><i data-lucide="archive"></i> Finalizadas</div>
-            <div class="menu-item" id="nav-investigacao"><i data-lucide="clipboard-search"></i> Investigação de Óbito</div>
-            <div class="menu-item" id="nav-defesa"><i data-lucide="baby"></i> Defesa da Vida</div>
-            <div class="menu-item" id="nav-backup"><i data-lucide="download"></i> Backup / Importação</div>
-            <div class="menu-item" id="nav-apoiador" style="display:none;"><i data-lucide="layout-dashboard"></i> Apoiador</div>
-            <div class="menu-item" id="nav-acessos" style="display:none;"><i data-lucide="users-round"></i> Acesso de Usuários</div>
-            <div class="menu-item" id="nav-logs"><i data-lucide="history"></i> Histórico (Logs)</div>
-            <div class="menu-item" id="logout-btn"><i data-lucide="log-out"></i> Sair</div>
-            <div class="menu-item tutorial-item" id="tutorial-btn"><i data-lucide="circle-help"></i> Tutorial</div>
+        <nav id="sidebar" aria-label="Menu principal">
+            <div class="sidebar-brand">
+                <span class="sidebar-brand-icon"><i data-lucide="heart-pulse"></i></span>
+                <div><h3>Vila Dutra APS</h3><small>Gestão de gestantes</small></div>
+                <button id="close-sidebar" aria-label="Fechar menu"><i data-lucide="x"></i></button>
+            </div>
+            <div class="sidebar-menu">
+                <section class="menu-section" aria-labelledby="menu-principal">
+                    <h4 class="menu-section-title" id="menu-principal">Principal</h4>
+                    <div class="menu-item" id="nav-list"><i data-lucide="users"></i><span>Gestantes ativas</span></div>
+                    <div class="menu-item" id="nav-register"><i data-lucide="user-plus"></i><span>Cadastrar gestante</span></div>
+                    <div class="menu-item" id="nav-reports"><i data-lucide="search-check"></i><span>Relatórios e busca ativa</span></div>
+                </section>
+                <section class="menu-section" aria-labelledby="menu-acompanhamento">
+                    <h4 class="menu-section-title" id="menu-acompanhamento">Acompanhamento</h4>
+                    <div class="menu-item" id="nav-consultas"><i data-lucide="calendar-days"></i><span>Consultas</span></div>
+                    <div class="menu-item" id="nav-procedimentos"><i data-lucide="stethoscope"></i><span>Procedimentos</span></div>
+                    <div class="menu-item" id="nav-ist"><i data-lucide="shield-check"></i><span>Controle de IST</span></div>
+                    <div class="menu-item" id="nav-indicador-c3"><i data-lucide="chart-no-axes-combined"></i><span>Indicador C3</span></div>
+                </section>
+                <section class="menu-section" aria-labelledby="menu-desfechos">
+                    <h4 class="menu-section-title" id="menu-desfechos">Desfechos e vigilância</h4>
+                    <div class="menu-item" id="nav-finalizadas"><i data-lucide="circle-check-big"></i><span>Gestantes finalizadas</span></div>
+                    <div class="menu-item" id="nav-investigacao"><i data-lucide="clipboard-search"></i><span>Investigação de óbito</span></div>
+                    <div class="menu-item" id="nav-defesa"><i data-lucide="baby"></i><span>Defesa da Vida</span></div>
+                </section>
+                <section class="menu-section" aria-labelledby="menu-gestao">
+                    <h4 class="menu-section-title" id="menu-gestao">Gestão e sistema</h4>
+                    <div class="menu-item" id="nav-apoiador" style="display:none;"><i data-lucide="layout-dashboard"></i><span>Painel da apoiadora</span></div>
+                    <div class="menu-item" id="nav-acessos" style="display:none;"><i data-lucide="user-cog"></i><span>Acesso de usuários</span></div>
+                    <div class="menu-item" id="nav-logs"><i data-lucide="history"></i><span>Histórico de alterações</span></div>
+                    <div class="menu-item" id="nav-backup"><i data-lucide="database-backup"></i><span>Backup e importação</span></div>
+                </section>
+            </div>
+            <div class="sidebar-footer">
+                <div class="menu-item tutorial-item" id="tutorial-btn"><i data-lucide="circle-help"></i><span>Ajuda e tutorial</span></div>
+                <div class="menu-item" id="logout-btn"><i data-lucide="log-out"></i><span>Sair do sistema</span></div>
+            </div>
         </nav>
 
         <main id="main-content">
@@ -1469,6 +1651,67 @@
         </div>
     </div>
 
+    <!-- Acompanhamento GAR -->
+    <div id="gar-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="gar-modal-title">
+        <div class="modal-content" style="max-width:680px; max-height:90vh; overflow-y:auto;">
+            <div class="gar-modal-header">
+                <h3 id="gar-modal-title">Acompanhamento GAR</h3>
+                <p id="gar-gestante-nome">Gestação de Alto Risco</p>
+            </div>
+            <form id="gar-form">
+                <input type="hidden" id="gar-gestante-id">
+                <label class="gar-check">
+                    <input type="checkbox" id="gar-alto-risco">
+                    <span><strong>Marcar como gestante de alto risco</strong><br><small>Ao salvar, o card ficará destacado em vermelho.</small></span>
+                </label>
+                <div class="gar-form-grid" style="margin-top:14px;">
+                    <div class="form-group">
+                        <label>Data de identificação do alto risco</label>
+                        <input type="date" id="gar-data-identificacao">
+                    </div>
+                    <div class="form-group">
+                        <label>Motivo / condição de alto risco</label>
+                        <input type="text" id="gar-motivo" placeholder="Ex.: hipertensão, diabetes...">
+                    </div>
+                </div>
+                <label class="gar-check" style="margin-bottom:14px;">
+                    <input type="checkbox" id="gar-encaminhada">
+                    <span><strong>Encaminhada ao GAR</strong><br><small>Registre quando e para onde foi encaminhada.</small></span>
+                </label>
+                <div class="gar-form-grid">
+                    <div class="form-group">
+                        <label>Data do encaminhamento</label>
+                        <input type="date" id="gar-data-encaminhamento">
+                    </div>
+                    <div class="form-group">
+                        <label>Serviço / local de referência</label>
+                        <input type="text" id="gar-destino" placeholder="Nome do serviço">
+                    </div>
+                    <div class="form-group">
+                        <label>Consulta GAR agendada para</label>
+                        <input type="date" id="gar-data-agendada">
+                    </div>
+                    <div class="form-group">
+                        <label>Data da consulta realizada</label>
+                        <input type="date" id="gar-data-consulta">
+                    </div>
+                </div>
+                <label class="gar-check" style="margin-bottom:14px;">
+                    <input type="checkbox" id="gar-consulta-realizada">
+                    <span><strong>Consulta no GAR realizada</strong><br><small>Marque quando houver confirmação do atendimento.</small></span>
+                </label>
+                <div class="form-group">
+                    <label>Observações do acompanhamento</label>
+                    <textarea id="gar-observacoes" rows="3" placeholder="Conduta, retorno, pendências ou outras informações"></textarea>
+                </div>
+                <div style="display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;">
+                    <button type="button" id="close-gar-modal" style="background:#f1f5f9;color:#475569;">Cancelar</button>
+                    <button type="submit" id="save-gar"><i data-lucide="save" style="width:16px;"></i> Salvar acompanhamento GAR</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div id="notification"></div>
 
     <div id="tutorial-modal" class="modal-overlay">
@@ -1594,6 +1837,9 @@
         const isHighRisk = (gestante) => String(gestante?.risco_gestacional || '').trim().toUpperCase() === 'ALTO RISCO';
         const highRiskBadge = (gestante) => isHighRisk(gestante)
             ? '<span class="risk-badge"><i data-lucide="triangle-alert" style="width:13px;height:13px;"></i> Alto risco</span>'
+            : '';
+        const formatGarDate = (value) => value
+            ? new Date(`${value}T00:00:00`).toLocaleDateString('pt-BR')
             : '';
 
         const requireAuth = () => {
@@ -2020,6 +2266,12 @@
                         const nomeSeguro = escapeHtml(g.nome || '');
                         const cnsSeguro = escapeHtml(g.cns || '--');
                         let badges = highRiskBadge(g);
+                        const gar = g.gar || {};
+                        const garResumo = gar.consultaRealizada
+                            ? `GAR: consulta realizada${gar.dataConsulta ? ` em ${formatGarDate(gar.dataConsulta)}` : ''}`
+                            : gar.encaminhada
+                                ? `GAR: encaminhada${gar.dataEncaminhamento ? ` em ${formatGarDate(gar.dataEncaminhamento)}` : ''}${gar.dataAgendada ? ` · consulta ${formatGarDate(gar.dataAgendada)}` : ''}`
+                                : isHighRisk(g) ? 'GAR: acompanhamento ainda não informado' : '';
 
                         if (sem >= 37) badges += `<span style="background:#fce7f3; color:#be185d; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;">Atenção Reta Final (${sem} sem)</span>`;
                         else if (sem >= 28) badges += `<span style="background:#e0e7ff; color:#4338ca; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:bold;"> 3º Trimestre</span>`;
@@ -2060,7 +2312,10 @@
                                     </div>
                                 </div>
                                 
-                               <div style="display: flex; gap: 4px; border-top: 1px dashed #e2e8f0; padding-top: 6px; margin-top: 4px; justify-content: flex-end;">
+                                <div style="display: flex; gap: 4px; border-top: 1px dashed #e2e8f0; padding-top: 6px; margin-top: 4px; justify-content: flex-end;">
+                                    <button onclick="window.abrirGar('${idArg}')" class="gar-card-button" title="Acompanhamento de Gestação de Alto Risco">
+                                        <i data-lucide="heart-pulse" style="width: 10px; height: 10px;"></i> GAR
+                                    </button>
                                     <button onclick="window.irParaIst('${idArg}')" style="background: #f0f9ff; color: #0ea5e9; border: 1px solid #bae6fd; font-size: 9px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-weight: bold; display: flex; align-items: center; gap: 3px; transition: 0.2s;">
                                         <i data-lucide="microscope" style="width: 10px; height: 10px;"></i> IST
                                     </button>
@@ -2075,6 +2330,7 @@
                                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                     ${badges}
                                 </div>
+                                ${garResumo ? `<div class="gar-status-summary"><strong>${escapeHtml(garResumo)}</strong>${gar.motivo ? `<br>Motivo: ${escapeHtml(gar.motivo)}` : ''}</div>` : ''}
                             </div>
                         `;
                     }).join('') || `<p style="text-align:center; color:#94a3b8; padding: 20px;">Nenhuma gestante encontrada.</p>`;
@@ -2929,6 +3185,91 @@
             document.getElementById('btn-cancel-cons').style.display = 'none';
             
             window.loadConsHistory(id);
+        };
+
+        // ACOMPANHAMENTO DE GESTAÇÃO DE ALTO RISCO (GAR)
+        window.abrirGar = (id) => {
+            if (!requireAuth()) return;
+            const g = rawGestantes.find(item => item.id === id);
+            if (!g) {
+                showNotify('Gestante não encontrada.', 'error');
+                return;
+            }
+            const gar = g.gar || {};
+            document.getElementById('gar-form').reset();
+            document.getElementById('gar-gestante-id').value = g.id;
+            document.getElementById('gar-gestante-nome').textContent = g.nome || 'Gestante';
+            document.getElementById('gar-alto-risco').checked = isHighRisk(g);
+            document.getElementById('gar-data-identificacao').value = gar.dataIdentificacao || '';
+            document.getElementById('gar-motivo').value = gar.motivo || '';
+            document.getElementById('gar-encaminhada').checked = Boolean(gar.encaminhada);
+            document.getElementById('gar-data-encaminhamento').value = gar.dataEncaminhamento || '';
+            document.getElementById('gar-destino').value = gar.destino || '';
+            document.getElementById('gar-data-agendada').value = gar.dataAgendada || '';
+            document.getElementById('gar-data-consulta').value = gar.dataConsulta || '';
+            document.getElementById('gar-consulta-realizada').checked = Boolean(gar.consultaRealizada);
+            document.getElementById('gar-observacoes').value = gar.observacoes || '';
+            document.getElementById('gar-modal').classList.add('show');
+            if (window.lucide) lucide.createIcons();
+        };
+
+        const fecharGar = () => document.getElementById('gar-modal').classList.remove('show');
+        document.getElementById('close-gar-modal').onclick = fecharGar;
+        document.getElementById('gar-modal').onclick = (event) => {
+            if (event.target.id === 'gar-modal') fecharGar();
+        };
+
+        document.getElementById('gar-form').onsubmit = async (event) => {
+            event.preventDefault();
+            if (!requireAuth()) return;
+            const id = document.getElementById('gar-gestante-id').value;
+            const g = rawGestantes.find(item => item.id === id);
+            if (!g) return showNotify('Gestante não encontrada.', 'error');
+
+            const altoRisco = document.getElementById('gar-alto-risco').checked;
+            const encaminhada = document.getElementById('gar-encaminhada').checked;
+            const consultaRealizada = document.getElementById('gar-consulta-realizada').checked;
+            const dataEncaminhamento = document.getElementById('gar-data-encaminhamento').value;
+            const dataConsulta = document.getElementById('gar-data-consulta').value;
+
+            if (encaminhada && !dataEncaminhamento) {
+                return showNotify('Informe a data do encaminhamento ao GAR.', 'error');
+            }
+            if (consultaRealizada && !dataConsulta) {
+                return showNotify('Informe a data em que a consulta GAR foi realizada.', 'error');
+            }
+
+            const gar = {
+                dataIdentificacao: document.getElementById('gar-data-identificacao').value,
+                motivo: document.getElementById('gar-motivo').value.trim(),
+                encaminhada,
+                dataEncaminhamento,
+                destino: document.getElementById('gar-destino').value.trim(),
+                dataAgendada: document.getElementById('gar-data-agendada').value,
+                consultaRealizada,
+                dataConsulta,
+                observacoes: document.getElementById('gar-observacoes').value.trim(),
+                atualizadoEm: new Date().toISOString()
+            };
+
+            const button = document.getElementById('save-gar');
+            button.disabled = true;
+            try {
+                await updateItem('gestantes', id, {
+                    equipeId: g.equipeId || g.area_paciente || currentArea,
+                    risco_gestacional: altoRisco ? 'ALTO RISCO' : (isHighRisk(g) ? 'RISCO HABITUAL' : (g.risco_gestacional || 'RISCO HABITUAL')),
+                    gar
+                });
+                await registrarLog('Atualizou acompanhamento GAR', `Paciente: ${g.nome} | Alto risco: ${altoRisco ? 'Sim' : 'Não'} | Encaminhada: ${encaminhada ? 'Sim' : 'Não'} | Consulta realizada: ${consultaRealizada ? 'Sim' : 'Não'}`);
+                fecharGar();
+                showNotify('Acompanhamento GAR salvo com sucesso.', 'success');
+                navActions['nav-list']();
+            } catch (error) {
+                console.error('Erro ao salvar GAR:', error);
+                showNotify('Não foi possível salvar o acompanhamento GAR.', 'error');
+            } finally {
+                button.disabled = false;
+            }
         };
 
         // FINALIZAÇÃO
